@@ -1,0 +1,17 @@
+# build output
+bin/
+obj/
+nupkg/
+*.nupkg
+
+# IDE
+*.user
+.vs/
+.idea/
+.vscode/
+
+# development-only material, deliberately kept out of the repository:
+# tests, test PDFs (including real templates), fuzz tool and the solution that includes them
+tests/
+tools/
+PdfFormFiller.Dev.sln

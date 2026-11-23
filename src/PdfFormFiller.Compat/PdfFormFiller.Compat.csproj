@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>PdfFormFiller.Compat</RootNamespace>
+    <PackageId>PdfFormFiller.Compat</PackageId>
+    <Version>0.5.0</Version>
+    <Description>Legacy widget-style form API (PdfDocument, PdfFormWidget, PdfTextBoxFieldWidget ...) implemented on top of PdfFormFiller, for code that was written against that style.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PdfFormFiller\PdfFormFiller.csproj" />
+  </ItemGroup>
+
+</Project>
