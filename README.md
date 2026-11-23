@@ -133,12 +133,15 @@ Felmeddelandet listar tillgängliga alternativ.
 - Orörda fält behåller mallens eget utseende. Bara fält du ändrar, eller fält som saknar utseende i mallen, ritas om.
 - En instans är inte trådsäker. Använd en instans per tråd eller anrop.
 
-## Kompatibilitetslager för äldre kod
+## Widget-API för äldre kod
 
-Paketet **PdfFormFiller.Compat** erbjuder ett widget-baserat API i namnrymderna `PdfFormFiller.Compat`,
-`PdfFormFiller.Compat.Widget`, `PdfFormFiller.Compat.Fields` och `PdfFormFiller.Compat.Graphics`. Det är till för
-befintlig kod som arbetar med fältobjekt som castas till typ. Klass- och medlemsnamnen är oförändrade, så en migrering
-består av att byta using-satserna:
+Paketet **PdfFormFiller.Widgets** erbjuder ett widget-baserat API i namnrymden `PdfFormFiller.Widgets`. Det är till
+för befintlig kod som arbetar med fältobjekt som castas till typ, till exempel `PdfTextBoxFieldWidget`. Klass- och
+medlemsnamnen är de invanda, så en migrering består av att byta using-satserna mot en enda:
+
+```csharp
+using PdfFormFiller.Widgets;
+```
 
 ```csharp
 PdfDocument doc = new PdfDocument();
@@ -193,7 +196,7 @@ doc.Append(bilaga, fieldPrefix: "bilaga")          // bilagans fält heter nu "b
 ```bash
 dotnet build -c Release
 dotnet pack src/PdfFormFiller/PdfFormFiller.csproj -c Release -o nupkg
-dotnet pack src/PdfFormFiller.Compat/PdfFormFiller.Compat.csproj -c Release -o nupkg
+dotnet pack src/PdfFormFiller.Widgets/PdfFormFiller.Widgets.csproj -c Release -o nupkg
 ```
 
 Kräver .NET 8 SDK. Inga andra verktyg eller paket behövs.

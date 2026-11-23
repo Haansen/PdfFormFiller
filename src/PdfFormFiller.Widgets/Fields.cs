@@ -1,9 +1,9 @@
 using PdfFormFiller;
 
-namespace PdfFormFiller.Compat.Fields;
+namespace PdfFormFiller.Widgets;
 
 /// <summary>
-/// Base of all form fields, as in PdfFormFiller.Compat.Fields.PdfField. A field object is a live handle: it follows renames and
+/// Base of all form fields, as in PdfFormFiller.Widgets.PdfField. A field object is a live handle: it follows renames and
 /// always reads current state from the document.
 /// </summary>
 public abstract class PdfField

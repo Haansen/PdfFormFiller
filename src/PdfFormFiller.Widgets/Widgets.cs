@@ -1,10 +1,8 @@
 using PdfFormFiller;
-using PdfFormFiller.Compat.Fields;
-using PdfFormFiller.Compat.Graphics;
 
-namespace PdfFormFiller.Compat.Widget;
+namespace PdfFormFiller.Widgets;
 
-/// <summary>PdfFormFiller.Compat.Widget.PdfFormWidget look-alike: the form of a loaded document.</summary>
+/// <summary>PdfFormFiller.Widgets.PdfFormWidget look-alike: the form of a loaded document.</summary>
 public class PdfFormWidget
 {
     private readonly PdfDocument _doc;

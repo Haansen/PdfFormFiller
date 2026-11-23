@@ -1,7 +1,6 @@
 using PdfFormFiller;
-using PdfFormFiller.Compat.Widget;
 
-namespace PdfFormFiller.Compat;
+namespace PdfFormFiller.Widgets;
 
 public enum FileFormat { PDF }
 
@@ -31,7 +30,7 @@ public abstract class PdfDocumentBase : IDisposable
     }
 }
 
-/// <summary>PdfFormFiller.Compat.PdfDocument look-alike covering load, form access, pages, append/merge and save.</summary>
+/// <summary>PdfFormFiller.Widgets.PdfDocument look-alike covering load, form access, pages, append/merge and save.</summary>
 public class PdfDocument : PdfDocumentBase
 {
     private PdfFormWidget? _form;
