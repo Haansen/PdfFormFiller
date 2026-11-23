@@ -227,7 +227,10 @@ git push origin v1.0.0
 Paketen hamnar i GitHub Packages och bifogas en release. Finns repo-hemligheten `NUGET_API_KEY` publiceras de även
 till nuget.org.
 
-## Licenser
+## Licens
+
+PdfFormFiller är licensierat under MIT-licensen, se filen `LICENSE`. Du får använda, ändra och sprida biblioteket fritt,
+även kommersiellt, så länge upphovsrätts- och licenstexten följer med.
 
 Fonten Liberation Sans i `src/PdfFormFiller/Fonts` används för textmätning och bäddas in i PDF:er som innehåller tecken
 utanför WinAnsi. Den omfattas av SIL Open Font License, se licensfilen i samma mapp.

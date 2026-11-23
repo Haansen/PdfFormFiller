@@ -3,6 +3,8 @@
   <!-- Shared package metadata for everything under src/ -->
   <PropertyGroup Condition="$(MSBuildProjectDirectory.Replace('\', '/').Contains('/src/'))">
     <Authors>Haansen</Authors>
+    <Copyright>Copyright (c) 2026 Haansen</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/Haansen/PdfFormFiller</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Haansen/PdfFormFiller</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
