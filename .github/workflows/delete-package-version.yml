@@ -1,0 +1,31 @@
+name: Delete package version
+
+# Manual clean-up: removes one version of both packages from GitHub Packages.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to delete, for example 0.6.0"
+        required: true
+
+permissions:
+  packages: write
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [PdfFormFiller, PdfFormFiller.Widgets]
+    steps:
+      - name: Delete ${{ matrix.package }} ${{ inputs.version }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE: ${{ matrix.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          id=$(gh api "users/${{ github.repository_owner }}/packages/nuget/$PACKAGE/versions" --jq ".[] | select(.name == \"$VERSION\") | .id")
+          if [ -z "$id" ]; then echo "$PACKAGE $VERSION not found"; exit 0; fi
+          gh api -X DELETE "users/${{ github.repository_owner }}/packages/nuget/$PACKAGE/versions/$id"
+          echo "deleted $PACKAGE $VERSION"
+          echo "remaining:"; gh api "users/${{ github.repository_owner }}/packages/nuget/$PACKAGE/versions" --jq '.[].name'
