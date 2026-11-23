@@ -201,16 +201,31 @@ dotnet pack src/PdfFormFiller.Widgets/PdfFormFiller.Widgets.csproj -c Release -o
 
 Kräver .NET 8 SDK. Inga andra verktyg eller paket behövs.
 
+## Installera
+
+Paketen publiceras till GitHub Packages. Lägg till källan en gång, i Visual Studio under Tools, Options,
+NuGet Package Manager, Package Sources, eller från kommandoraden:
+
+```bash
+dotnet nuget add source https://nuget.pkg.github.com/Haansen/index.json --name Haansen --username DITT_GITHUB_NAMN --password DIN_TOKEN --store-password-in-clear-text
+dotnet add package PdfFormFiller
+```
+
+GitHub Packages kräver inloggning även för publika paket. Använd en personlig åtkomsttoken med rättigheten
+`read:packages`. Vill du slippa det kan du ladda ner `.nupkg`-filerna från repots Releases-sida och lägga dem i en
+lokal mapp som du pekar ut som paketkälla.
+
 ## Släppa en ny version
 
-Paketen publiceras till nuget.org av GitHub Actions när en versionstagg pushas. Taggen bestämmer versionsnumret:
+GitHub Actions bygger och publicerar paketen när en versionstagg pushas. Taggen bestämmer versionsnumret:
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-Flödet kräver repo-hemligheten `NUGET_API_KEY` med en API-nyckel från nuget.org.
+Paketen hamnar i GitHub Packages och bifogas en release. Finns repo-hemligheten `NUGET_API_KEY` publiceras de även
+till nuget.org.
 
 ## Licenser
 

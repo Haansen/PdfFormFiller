@@ -1,4 +1,4 @@
-name: Publish to NuGet
+name: Publish packages
 
 # Runs when a version tag such as v1.0.0 is pushed. The tag decides the package version.
 on:
@@ -7,11 +7,14 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write   # create the GitHub release
+  packages: write   # push to GitHub Packages
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +33,15 @@ jobs:
           dotnet pack src/PdfFormFiller/PdfFormFiller.csproj -c Release --no-build -p:Version=$VERSION -o nupkg
           dotnet pack src/PdfFormFiller.Widgets/PdfFormFiller.Widgets.csproj -c Release --no-build -p:Version=$VERSION -o nupkg
 
-      - name: Push to nuget.org
-        run: dotnet nuget push "nupkg/*.nupkg" --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+      - name: Push to GitHub Packages
+        run: dotnet nuget push "nupkg/*.nupkg" --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" --api-key "${{ secrets.GITHUB_TOKEN }}" --skip-duplicate
+
+      - name: Attach packages to a GitHub release
+        run: gh release create "$GITHUB_REF_NAME" nupkg/*.nupkg --title "$GITHUB_REF_NAME" --generate-notes
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only runs once a nuget.org API key has been added as the NUGET_API_KEY repository secret.
+      - name: Push to nuget.org
+        if: env.NUGET_API_KEY != ''
+        run: dotnet nuget push "nupkg/*.nupkg" --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
