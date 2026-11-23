@@ -1,0 +1,27 @@
+<Project>
+
+  <!-- Shared package metadata for everything under src/ -->
+  <PropertyGroup Condition="$(MSBuildProjectDirectory.Replace('\', '/').Contains('/src/'))">
+    <Authors>Haansen</Authors>
+    <PackageProjectUrl>https://github.com/Haansen/PdfFormFiller</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Haansen/PdfFormFiller</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>pdf;acroform;forms;form-filling;flatten;merge</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <!-- Reproducible packages: no machine-specific paths in the binaries -->
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
+    <DebugType>embedded</DebugType>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <ItemGroup Condition="$(MSBuildProjectDirectory.Replace('\', '/').Contains('/src/'))">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+</Project>

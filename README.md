@@ -201,6 +201,17 @@ dotnet pack src/PdfFormFiller.Widgets/PdfFormFiller.Widgets.csproj -c Release -o
 
 Kräver .NET 8 SDK. Inga andra verktyg eller paket behövs.
 
+## Släppa en ny version
+
+Paketen publiceras till nuget.org av GitHub Actions när en versionstagg pushas. Taggen bestämmer versionsnumret:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Flödet kräver repo-hemligheten `NUGET_API_KEY` med en API-nyckel från nuget.org.
+
 ## Licenser
 
 Fonten Liberation Sans i `src/PdfFormFiller/Fonts` används för textmätning och bäddas in i PDF:er som innehåller tecken
