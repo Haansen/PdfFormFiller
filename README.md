@@ -277,5 +277,12 @@ till nuget.org.
 PdfFormFiller är licensierat under MIT-licensen, se filen `LICENSE`. Du får använda, ändra och sprida biblioteket fritt,
 även kommersiellt, så länge upphovsrätts- och licenstexten följer med.
 
-Fonten Liberation Sans i `src/PdfFormFiller/Fonts` används för textmätning och bäddas in i PDF:er som innehåller tecken
-utanför WinAnsi. Den omfattas av SIL Open Font License, se licensfilen i samma mapp.
+Biblioteket innehåller två fonter från Liberation Sans version 2.1.5, Regular och Bold, i `src/PdfFormFiller/Fonts`.
+Fonterna är **inte** MIT-licensierade. De omfattas av SIL Open Font License 1.1 (OFL), se licensfilen
+`src/PdfFormFiller/Fonts/LICENSE-LiberationSans.txt`. Upphovsrätten i licensfilen tillhör Google Corporation (digitaliserad
+data, 2010) och Red Hat, Inc. (2012). OFL förbjuder att en ändrad version av fonten använder det reserverade namnet
+"Liberation".
+
+Regular används för textmätning och bäddas in i PDF:er som innehåller tecken utanför WinAnsi. Båda fonterna är inbäddade
+i DLL:en som manifestresurser (`PdfFormFiller.Fonts.LiberationSans-Regular.ttf` och `PdfFormFiller.Fonts.LiberationSans-Bold.ttf`).
+Licensfilen packas med NuGet-paketet `PdfFormFiller` som `LICENSE-LiberationSans.txt`.

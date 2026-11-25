@@ -416,7 +416,7 @@ internal sealed class AppearanceBuilder
         var metrics = TextMeasurer.Metrics;
         foreach (var ch in raw)
         {
-            var c = ch == '\t' ? ' ' : ch;
+            var c = ch == '\t' ? ' ' : ch == '\u2011' ? '-' : ch; // U+2011 (no-break hyphen) is not in Liberation Sans 2.x
             if (c is '\n' or '\r') { sb.Append(c); continue; }
             if (char.IsControl(c)) continue;
             if (WinAnsi.CanEncode(c)) { sb.Append(c); continue; }
