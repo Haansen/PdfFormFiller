@@ -29,4 +29,5 @@ jobs:
         run: |
           dotnet pack src/PdfFormFiller/PdfFormFiller.csproj -c Release --no-build -o "$OUT"
           dotnet pack src/PdfFormFiller.Widgets/PdfFormFiller.Widgets.csproj -c Release --no-build -o "$OUT"
+          dotnet pack src/PdfFormFiller.Reports/PdfFormFiller.Reports.csproj -c Release --no-build -o "$OUT"
           ls -l "$OUT"

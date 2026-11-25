@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>PdfFormFiller.Reports</RootNamespace>
+    <PackageId>PdfFormFiller.Reports</PackageId>
+    <Version>0.6.1</Version>
+    <Description>Report and table PDFs generated from lists of objects, built on PdfFormFiller.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PdfFormFiller\PdfFormFiller.csproj" />
+  </ItemGroup>
+
+  <!--
+    The reports use internals of PdfFormFiller, which may change between versions. The package therefore depends on
+    exactly the PdfFormFiller version it was built against: [x.y.z] instead of the default >= x.y.z. The SDK collects the
+    referenced project's version into _ProjectReferencesWithVersions while packing; this rewrites that one entry.
+  -->
+  <Target Name="PinPdfFormFillerVersion" AfterTargets="_GetProjectReferenceVersions">
+    <ItemGroup>
+      <_ProjectReferencesWithVersions Condition="'%(Filename)' == 'PdfFormFiller'">
+        <ProjectVersion>[%(ProjectVersion)]</ProjectVersion>
+      </_ProjectReferencesWithVersions>
+    </ItemGroup>
+  </Target>
+
+</Project>

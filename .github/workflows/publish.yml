@@ -45,6 +45,7 @@ jobs:
         run: |
           dotnet pack src/PdfFormFiller/PdfFormFiller.csproj -c Release --no-build -p:Version="$VERSION" -o nupkg
           dotnet pack src/PdfFormFiller.Widgets/PdfFormFiller.Widgets.csproj -c Release --no-build -p:Version="$VERSION" -o nupkg
+          dotnet pack src/PdfFormFiller.Reports/PdfFormFiller.Reports.csproj -c Release --no-build -p:Version="$VERSION" -o nupkg
 
       - name: Push to GitHub Packages
         env:

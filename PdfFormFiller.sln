@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PdfFormFiller", "src\PdfFor
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PdfFormFiller.Widgets", "src\PdfFormFiller.Widgets\PdfFormFiller.Widgets.csproj", "{7864FE5B-230B-4A46-B915-EA1088F0A80E}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PdfFormFiller.Reports", "src\PdfFormFiller.Reports\PdfFormFiller.Reports.csproj", "{F977A574-C639-41EC-8B53-563514B18805}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,9 +28,14 @@ Global
 		{7864FE5B-230B-4A46-B915-EA1088F0A80E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{7864FE5B-230B-4A46-B915-EA1088F0A80E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{7864FE5B-230B-4A46-B915-EA1088F0A80E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F977A574-C639-41EC-8B53-563514B18805}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F977A574-C639-41EC-8B53-563514B18805}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F977A574-C639-41EC-8B53-563514B18805}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F977A574-C639-41EC-8B53-563514B18805}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{913C9BD0-091D-4C5C-8658-BCBF8FD38662} = {C7BB5680-E6D7-42F3-A970-D9E2FE2EAE9C}
 		{7864FE5B-230B-4A46-B915-EA1088F0A80E} = {C7BB5680-E6D7-42F3-A970-D9E2FE2EAE9C}
+		{F977A574-C639-41EC-8B53-563514B18805} = {C7BB5680-E6D7-42F3-A970-D9E2FE2EAE9C}
 	EndGlobalSection
 EndGlobal

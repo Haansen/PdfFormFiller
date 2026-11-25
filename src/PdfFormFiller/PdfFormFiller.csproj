@@ -13,7 +13,9 @@
     <NoWarn>CS1591</NoWarn>
   </PropertyGroup>
 
+  <!-- PdfFormFiller.Reports uses internals; see the note in its project file -->
   <ItemGroup>
+    <InternalsVisibleTo Include="PdfFormFiller.Reports" />
   </ItemGroup>
 
   <ItemGroup>
