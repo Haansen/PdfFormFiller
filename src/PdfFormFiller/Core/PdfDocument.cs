@@ -56,6 +56,33 @@ internal sealed class PdfDocument
         return doc;
     }
 
+    /// <summary>A new document without pages. See <see cref="PdfBuilder"/> for generating content.</summary>
+    public static PdfDocument CreateEmpty()
+    {
+        var doc = new PdfDocument(Array.Empty<byte>()) { _reconstructed = true };
+        var pages = new PdfDictionary();
+        pages["/Type"] = new PdfName("/Pages");
+        pages["/Kids"] = new PdfArray();
+        pages["/Count"] = new PdfNumber(0);
+        doc.Catalog["/Type"] = new PdfName("/Catalog");
+        doc.Catalog["/Pages"] = doc.RefFor(pages);
+        doc.Trailer["/Root"] = doc.RefFor(doc.Catalog);
+        return doc;
+    }
+
+    /// <summary>Adds an empty page of the given size in points (3 to 14,400, the range PDF allows) at the end.</summary>
+    public PdfDictionary AddPage(double width, double height)
+    {
+        if (width is not (>= 3 and <= 14400)) throw new ArgumentOutOfRangeException(nameof(width), "A page side must be between 3 and 14,400 points.");
+        if (height is not (>= 3 and <= 14400)) throw new ArgumentOutOfRangeException(nameof(height), "A page side must be between 3 and 14,400 points.");
+        var page = new PdfDictionary();
+        page["/Type"] = new PdfName("/Page");
+        page["/MediaBox"] = new PdfArray(new PdfNumber(0), new PdfNumber(0), new PdfNumber(Math.Round(width, 3)), new PdfNumber(Math.Round(height, 3)));
+        page["/Resources"] = new PdfDictionary();
+        AppendPage(page);
+        return page;
+    }
+
     private void Init(string? password)
     {
         var ok = false;
@@ -668,8 +695,22 @@ internal sealed class PdfDocument
         root["/Kids"] = kids;
         root["/Count"] = new PdfNumber(order.Count);
         foreach (var k in Inheritable) root.Remove(k);
+        _removedPages.UnionWith(Pages);
+        _removedPages.ExceptWith(order);
         _pages = order.ToList();
     }
 
-    public byte[] Save() => PdfWriter.Write(this);
+    private readonly HashSet<PdfObject> _removedPages = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// True for a page taken out of the document. Bookmarks, links and tags may still point at it; such references are written
+    /// as null, or the page and its content would stay in the file.
+    /// </summary>
+    internal bool IsRemovedPage(PdfObject obj) => _removedPages.Count > 0 && _removedPages.Contains(obj);
+
+    public byte[] Save()
+    {
+        if (_removedPages.Count > 0) RemovedPageCleaner.Run(this, _removedPages);
+        return PdfWriter.Write(this);
+    }
 }

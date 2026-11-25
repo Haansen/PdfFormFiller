@@ -21,7 +21,8 @@ internal sealed class Importer
         _dest.RefFor(newPage);
         foreach (var kv in srcPage.Entries)
         {
-            if (kv.Key == "/Parent") continue;
+            // the structure tree stays behind; its keys would point into the destination's own tree
+            if (kv.Key is "/Parent" or "/StructParents") continue;
             newPage[kv.Key] = Copy(kv.Value);
         }
         // inherited attributes may live on ancestors
@@ -55,7 +56,8 @@ internal sealed class Importer
             switch (src)
             {
                 case PdfDictionary sd when dst is PdfDictionary dd:
-                    foreach (var kv in sd.Entries) dd[kv.Key] = Copy(kv.Value);
+                    foreach (var kv in sd.Entries)
+                        if (kv.Key is not ("/StructParent" or "/StructParents")) dd[kv.Key] = Copy(kv.Value);
                     break;
                 case PdfArray sa when dst is PdfArray da:
                     foreach (var it in sa.Items) da.Add(Copy(it));

@@ -176,7 +176,7 @@ internal static class Filters
         return output;
     }
 
-    private static byte Paeth(byte a, byte b, byte c)
+    internal static byte Paeth(byte a, byte b, byte c)
     {
         var p = a + b - c;
         var pa = Math.Abs(p - a); var pb = Math.Abs(p - b); var pc = Math.Abs(p - c);

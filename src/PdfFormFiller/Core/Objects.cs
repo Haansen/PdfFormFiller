@@ -164,6 +164,25 @@ internal sealed class PdfStream : PdfDictionary
         _decoded = plain;
     }
 
+    /// <summary>Replaces the content with a Flate-compressed copy, without keeping the uncompressed bytes.</summary>
+    internal void SetRawFlate(ReadOnlySpan<byte> plain)
+    {
+        Remove("/DecodeParms");
+        SetRaw(Deflate(plain, default));
+        this["/Filter"] = new PdfName("/FlateDecode");
+    }
+
+    internal static byte[] Deflate(ReadOnlySpan<byte> first, ReadOnlySpan<byte> second)
+    {
+        using var ms = new MemoryStream();
+        using (var z = new System.IO.Compression.ZLibStream(ms, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+        {
+            z.Write(first);
+            z.Write(second);
+        }
+        return ms.ToArray();
+    }
+
     /// <summary>Replaces raw bytes without touching the filter entries (used by decryption).</summary>
     internal void SetRaw(byte[] raw)
     {
@@ -171,6 +190,12 @@ internal sealed class PdfStream : PdfDictionary
         this["/Length"] = new PdfNumber(raw.Length);
         _decoded = null;
     }
+}
+
+/// <summary>Text written to the file as it is; only used while a generated document is being written.</summary>
+internal sealed class PdfLiteral : PdfObject
+{
+    public string Text { get; set; } = "null";
 }
 
 /// <summary>Indirect reference "n g R". Resolves lazily through the owning document.</summary>

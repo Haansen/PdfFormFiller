@@ -6,9 +6,9 @@ namespace PdfFormFiller.Core;
 /// <summary>Serializes a document as a fresh PDF 1.7 file with a classic xref table. Only reachable objects are written.</summary>
 internal static class PdfWriter
 {
-    public static byte[] Write(PdfDocument doc)
+    /// <summary>Collects the reachable indirect objects, numbering them 1..n in discovery order, and makes the trailer.</summary>
+    internal static (Dictionary<PdfObject, int> Numbers, List<PdfObject> Ordered, PdfDictionary Trailer) Collect(PdfDocument doc)
     {
-        // 1. collect reachable indirect objects, numbering them 1..n in discovery order
         var numbers = new Dictionary<PdfObject, int>(ReferenceEqualityComparer.Instance);
         var ordered = new List<PdfObject>();
         var queue = new Queue<PdfObject>();
@@ -19,7 +19,7 @@ internal static class PdfWriter
             if (o is PdfReference r)
             {
                 var target = r.Target;
-                if (target is PdfNull) return;
+                if (target is PdfNull || doc.IsRemovedPage(target)) return;
                 Number(target);
                 return;
             }
@@ -54,8 +54,12 @@ internal static class PdfWriter
         if (doc.Trailer.Dict("/Info") is { } info) trailer["/Info"] = doc.RefFor(info); // must be indirect
         VisitChildren(trailer);
         while (queue.Count > 0) VisitChildren(queue.Dequeue());
+        return (numbers, ordered, trailer);
+    }
 
-        // 2. write
+    public static byte[] Write(PdfDocument doc)
+    {
+        var (numbers, ordered, trailer) = Collect(doc);
         var ms = new MemoryStream();
         void W(string s) { var b = Encoding.Latin1.GetBytes(s); ms.Write(b, 0, b.Length); }
         W("%PDF-1.7\n%âãÏÓ\n");
@@ -80,7 +84,7 @@ internal static class PdfWriter
         return ms.ToArray();
     }
 
-    private static void WriteObject(MemoryStream ms, PdfObject o, Dictionary<PdfObject, int> numbers, bool topLevel = false)
+    internal static void WriteObject(MemoryStream ms, PdfObject o, Dictionary<PdfObject, int> numbers, bool topLevel = false)
     {
         void W(string s) { var b = Encoding.Latin1.GetBytes(s); ms.Write(b, 0, b.Length); }
         if (!topLevel && o is PdfDictionary or PdfArray && numbers.TryGetValue(o, out var own))
@@ -102,6 +106,7 @@ internal static class PdfWriter
             case PdfNumber n: W(n.ToString()); break;
             case PdfName name: W(EscapeName(name.Value)); break;
             case PdfString s: WriteString(ms, s); break;
+            case PdfLiteral l: W(l.Text); break;
             case PdfKeyword: W("null"); break; // junk from a damaged file; written out it would break the syntax around it
             case PdfArray a:
                 W("[");
