@@ -58,7 +58,7 @@ internal sealed class AppearanceBuilder
         => field.Widgets.Any(w => w.Dict("/AP")?.Dict("/N") is not PdfStream);
 
     /// <summary>True once this builder has written or created at least one appearance stream in the document.</summary>
-    public bool Wrote { get; private set; }
+    public bool Wrote { get; set; }
 
     /// <summary>
     /// Regenerates the appearances of all widgets of a field. All streams are built first and installed afterwards, so
@@ -392,7 +392,7 @@ internal sealed class AppearanceBuilder
         var fonts = new PdfDictionary();
         if (needsHelv) fonts.SetRef("/Helv", Helv, _doc);
         if (needsZaDb) fonts.SetRef("/ZaDb", ZaDb, _doc);
-        if (needsUni) fonts.SetRef("/PfU", UnicodeFont, _doc);
+        if (needsUni) fonts.SetRef("/PfU", Fallback.Dictionary, _doc);
         res["/Font"] = fonts;
         res["/ProcSet"] = new PdfArray(new PdfName("/PDF"), new PdfName("/Text"));
         form["/Resources"] = res;
@@ -432,94 +432,42 @@ internal sealed class AppearanceBuilder
 
     private static string FontRes(bool unicode) => unicode ? "/PfU" : "/Helv";
 
-    /// <summary>String operand for Tj: WinAnsi literal for Helvetica, hex glyph ids for the Unicode font.</summary>
-    private static string Show(string s, bool unicode)
+    /// <summary>String operand for Tj: WinAnsi literal for Helvetica, hex font codes of the subset for the Unicode font.</summary>
+    private string Show(string s, bool unicode)
     {
         if (!unicode) return WinAnsi.Literal(s);
-        var m = TextMeasurer.Metrics;
-        var sb = new StringBuilder(s.Length * 4 + 2);
-        sb.Append('<');
-        foreach (var c in s) sb.Append(m.GlyphOf(c).ToString("X4", System.Globalization.CultureInfo.InvariantCulture));
-        sb.Append('>');
-        return sb.ToString();
+        var font = Fallback;
+        if (!font.CanDraw(s)) s = font.ReplaceMissing(s);
+        _fallbackUsed = true;
+        var buffer = new ByteBuffer(s.Length * 4 + 2);
+        buffer.Byte((byte)'<');
+        font.WriteHex(buffer, s);
+        buffer.Byte((byte)'>');
+        return Encoding.ASCII.GetString(buffer.Written);
     }
 
-    private PdfDictionary? _unicodeFont;
+    private PdfFont? _fallback;
+    private bool _fallbackUsed;
 
-    /// <summary>Embedded Liberation Sans as a Type0/Identity-H font with a ToUnicode map. Created once per document, only when needed.</summary>
-    private PdfDictionary UnicodeFont => _unicodeFont ??= BuildUnicodeFont();
+    /// <summary>
+    /// The Unicode fallback font of this builder: Liberation Sans as a subset (Type0, Identity-H, ToUnicode) holding exactly
+    /// the glyphs drawn through this builder. Its objects are created by <see cref="FinishFonts"/>; until then streams only
+    /// refer to the (still empty) font dictionary.
+    /// </summary>
+    private PdfFont Fallback => _fallback ??= new PdfFont(TextMeasurer.FallbackFace, "/PfU", new PdfDictionary());
 
-    private PdfDictionary BuildUnicodeFont()
+    /// <summary>Writes the fallback font objects for everything drawn so far. Call once, after the last <see cref="Rebuild"/> and before saving.</summary>
+    public void FinishFonts()
     {
-        var m = TextMeasurer.Metrics;
-        var inv = System.Globalization.CultureInfo.InvariantCulture;
-        double Scale(int v) => Math.Round(v * 1000.0 / m.UnitsPerEm);
-
-        var file = new PdfStream(Array.Empty<byte>());
-        file.SetData(m.Data, compress: true);
-        file["/Length1"] = new PdfNumber(m.Data.Length);
-
-        var desc = new PdfDictionary();
-        desc["/Type"] = new PdfName("/FontDescriptor");
-        desc["/FontName"] = new PdfName("/LiberationSans");
-        desc["/Flags"] = new PdfNumber(32);
-        desc["/FontBBox"] = NumberArray(Scale(m.BBox[0]), Scale(m.BBox[1]), Scale(m.BBox[2]), Scale(m.BBox[3]));
-        desc["/ItalicAngle"] = new PdfNumber(0);
-        desc["/Ascent"] = new PdfNumber(Scale(m.Ascender));
-        desc["/Descent"] = new PdfNumber(Scale(m.Descender));
-        desc["/CapHeight"] = new PdfNumber(Math.Round(TextMeasurer.CapHeight * 1000));
-        desc["/StemV"] = new PdfNumber(80);
-        desc.SetRef("/FontFile2", file, _doc);
-
-        var widths = new PdfArray();
-        for (var g = 0; g < m.GlyphCount; g++) widths.Add(new PdfNumber(m.GlyphWidth1000(g)));
-
-        var sysInfo = new PdfDictionary();
-        sysInfo["/Registry"] = PdfString.FromText("Adobe");
-        sysInfo["/Ordering"] = PdfString.FromText("Identity");
-        sysInfo["/Supplement"] = new PdfNumber(0);
-
-        var cid = new PdfDictionary();
-        cid["/Type"] = new PdfName("/Font");
-        cid["/Subtype"] = new PdfName("/CIDFontType2");
-        cid["/BaseFont"] = new PdfName("/LiberationSans");
-        cid["/CIDSystemInfo"] = sysInfo;
-        cid.SetRef("/FontDescriptor", desc, _doc);
-        cid["/CIDToGIDMap"] = new PdfName("/Identity");
-        cid["/DW"] = new PdfNumber(1000);
-        cid["/W"] = new PdfArray(new PdfNumber(0), widths);
-
-        // ToUnicode so text can be searched and copied from the finished PDF
-        var cmap = new StringBuilder();
-        cmap.Append("/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n");
-        cmap.Append("/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n");
-        cmap.Append("/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n");
-        var pairs = new List<(int Glyph, int Char)>();
-        var seen = new HashSet<int>();
-        foreach (var kv in m.CharToGlyph)
-            if (seen.Add(kv.Value)) pairs.Add((kv.Value, kv.Key));
-        for (var i = 0; i < pairs.Count; i += 100)
-        {
-            var n = Math.Min(100, pairs.Count - i);
-            cmap.Append(n.ToString(inv)).Append(" beginbfchar\n");
-            for (var k = i; k < i + n; k++)
-                cmap.Append('<').Append(pairs[k].Glyph.ToString("X4", inv)).Append("> <").Append(pairs[k].Char.ToString("X4", inv)).Append(">\n");
-            cmap.Append("endbfchar\n");
-        }
-        cmap.Append("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
-        var toUnicode = new PdfStream(Array.Empty<byte>());
-        toUnicode.SetData(Encoding.ASCII.GetBytes(cmap.ToString()), compress: true);
-
-        var font = new PdfDictionary();
-        font["/Type"] = new PdfName("/Font");
-        font["/Subtype"] = new PdfName("/Type0");
-        font["/BaseFont"] = new PdfName("/LiberationSans");
-        font["/Encoding"] = new PdfName("/Identity-H");
-        font["/DescendantFonts"] = new PdfArray(_doc.RefFor(cid));
-        font.SetRef("/ToUnicode", toUnicode, _doc);
-        _doc.RefFor(font);
-        return font;
+        if (_fallback is null || !_fallbackUsed) return;
+        _fallback.Finish(_doc);
+        _fallback = null;
+        _fallbackUsed = false;
     }
+
+    /// <summary>True when a text or choice widget's normal appearance draws with the Unicode fallback font (resource /PfU).</summary>
+    public static bool UsesFallback(FieldNode field)
+        => field.Widgets.Any(w => w.Dict("/AP")?.Dict("/N") is PdfStream n && n.Dict("/Resources")?.Dict("/Font")?.ContainsKey("/PfU") == true);
 
     private void SetNormal(PdfDictionary widget, PdfStream form)
     {

@@ -569,7 +569,10 @@ public sealed class PdfFormDocument : IDisposable
         var acro = FieldTree.AcroForm(_doc);
         if (acro is not null)
         {
-            Appearances.EnsureDefaultResources();
+            // A builder of its own: its Unicode fallback font starts empty, so the document ends up with one subset that holds
+            // exactly the glyphs of the fields as they are now, whatever was drawn, replaced or loaded earlier.
+            var gen = new AppearanceBuilder(_doc);
+            gen.EnsureDefaultResources();
             // Fields changed through the setters already have fresh appearances. Untouched fields keep the template's own
             // appearance (special fonts, formatted values); they are only generated when the template has none, or when the
             // template asked viewers to regenerate everything.
@@ -579,16 +582,31 @@ public sealed class PdfFormDocument : IDisposable
                 switch (f.Type)
                 {
                     case FieldType.CheckBox or FieldType.RadioButton:
-                        Appearances.Rebuild(f); // only creates state streams that are missing
+                        gen.Strict = _throwOnUnsupported;
+                        gen.Rebuild(f); // only creates state streams that are missing
                         break;
                     case FieldType.Text or FieldType.ComboBox or FieldType.ListBox:
-                        if (all || AppearanceBuilder.LacksAppearance(f)) Appearances.Rebuild(f);
+                        if (all || AppearanceBuilder.LacksAppearance(f))
+                        {
+                            gen.Strict = _throwOnUnsupported;
+                            gen.Rebuild(f);
+                        }
+                        else if (AppearanceBuilder.UsesFallback(f))
+                        {
+                            // drawn earlier with a fallback font (by a setter, an older run, an appended file): redraw from the
+                            // stored value into the shared subset. Not a change of the form, and never a strict-mode failure.
+                            var wrote = gen.Wrote;
+                            gen.Strict = false;
+                            gen.Rebuild(f);
+                            gen.Wrote = wrote;
+                        }
                         break;
                 }
             }
+            gen.FinishFonts();
             acro["/NeedAppearances"] = PdfBool.False;
             _rebuildAllAppearances = false;
-            if (_formChanged || Appearances.Wrote) DropXfa(_doc);
+            if (_formChanged || gen.Wrote) DropXfa(_doc);
         }
 
         var bytes = _doc.Save();

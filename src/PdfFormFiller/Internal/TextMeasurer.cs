@@ -19,6 +19,11 @@ internal static class TextMeasurer
 
     public static TrueTypeMetrics Metrics => Font.Value;
 
+    private static readonly Lazy<TrueTypeFont> Face = new(() => new TrueTypeFont(Font.Value.Data));
+
+    /// <summary>Liberation Sans Regular for the embedding engine (subsetting); built once and shared.</summary>
+    public static TrueTypeFont FallbackFace => Face.Value;
+
     private static readonly Lazy<TrueTypeMetrics?> BoldFont = new(() =>
     {
         using var s = typeof(TextMeasurer).Assembly.GetManifestResourceStream("PdfFormFiller.Fonts.LiberationSans-Bold.ttf");
