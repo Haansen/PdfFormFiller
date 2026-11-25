@@ -195,7 +195,13 @@ internal sealed class ValueFormatter
     private string Guard(string s)
     {
         if (s.Contains('\0')) s = s.Replace("\0", "");
-        return Quote(s.TrimStart(' ') is { Length: > 0 } t && FormulaStart.Contains(t[0]) ? "'" + s : s);
+        foreach (var c in s)
+        {
+            if (FormulaStart.Contains(c)) return Quote("'" + s);
+            // spaces and invisible characters may be dropped by the program that reads the file
+            if (!char.IsWhiteSpace(c) && !char.IsControl(c) && char.GetUnicodeCategory(c) != UnicodeCategory.Format) break;
+        }
+        return Quote(s);
     }
 
     private string Quote(string s)
@@ -280,7 +286,7 @@ internal static class Aggregates
             try
             {
                 text = c.Formatter is null && c.Format is not null ? formatter.Text(value, c.Format)
-                    : value is decimal w && c.Aggregate == AggregateKind.Sum && c.Core != typeof(decimal) && IsExact(c.Core) ? formatter.Text(new BigInteger(w))
+                    : value is decimal w && c.Aggregate == AggregateKind.Sum && c.Core != typeof(decimal) && IsExact(c.Core) ? formatter.Text(new BigInteger(w), "N0")
                     : formatter.Text(value);
             }
             catch (FormatException) when (value is decimal) // "D" and "X" are for whole numbers only

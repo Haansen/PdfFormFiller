@@ -42,8 +42,9 @@ internal static class Colors
         return PdfColor.Black;
     }
 
-    /// <summary>White or near-black, whichever is easier to read on the background.</summary>
-    public static PdfColor On(PdfColor background) => Contrast(PdfColor.White, background) >= 4.5 || Contrast(PdfColor.White, background) >= Contrast(Palette.Ink, background) ? PdfColor.White : Palette.Ink;
+    /// <summary>White, near-black or black: the first with a contrast of 4.5. White or black always has it.</summary>
+    public static PdfColor On(PdfColor background)
+        => Contrast(PdfColor.White, background) >= 4.5 ? PdfColor.White : Contrast(Palette.Ink, background) >= 4.5 ? Palette.Ink : PdfColor.Black;
 }
 
 /// <summary>Background and text of a label.</summary>

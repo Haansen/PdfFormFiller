@@ -6,6 +6,7 @@ Ett fristående C#-bibliotek (.NET 8) för PDF-formulär:
 - Spara som **Flattened** (fälten ritas in i sidan och tas bort, inget går att redigera),
   **ReadOnly** (fälten finns kvar men är låsta) eller **Editable**
 - Slå ihop flera PDF:er till en, välj sidor, ta bort sidor, byt namn på fält
+- Skapa rapporter med tabeller från listor av objekt, med paketet **PdfFormFiller.Reports**
 - Returnerar alltid färdiga `byte[]`
 
 **Inga tredjepartsberoenden.** Parser, writer, filter, dekryptering och fontmätning är egen kod ovanpå .NET:s
@@ -220,6 +221,43 @@ doc.Append(bilaga, fieldPrefix: "bilaga")          // bilagans fält heter nu "b
    .Save("klar.pdf", OutputMode.Flattened);
 ```
 
+## Rapporter
+
+Paketet **PdfFormFiller.Reports** gör PDF-rapporter med tabeller från listor av objekt. Det kräver exakt samma version
+av PdfFormFiller, som följer med automatiskt.
+
+```csharp
+using PdfFormFiller.Reports;
+
+byte[] pdf = PdfReport.Create(orders)
+    .Title("Orderrapport", "November 2026")
+    .Branding(b => b.Logo(File.ReadAllBytes("logo.png")).Company("Företaget AB").Primary("#1E3A5F"))
+    .KeyFigure("Antal order", orders.Count)
+    .Column(o => o.Id, c => c.Header("Order"))
+    .Column(o => o.Customer.Name, c => c.Header("Kund"))
+    .Column(o => o.Status, c => c.Chip(OrderStatus.Levererad, ReportColors.Green))
+    .Column(o => o.Amount, c => c.Header("Belopp").Sum())
+    .GroupBy(o => o.Department, g => g.Header("Avdelning"))
+    .AttachCsv()
+    .Save();
+```
+
+| Del | Metoder |
+|---|---|
+| Data | `Create(items)`, `Create(type, items)` när typen är känd först vid körning, `Section` för fler tabeller |
+| Kolumner | `Column` med uttryck eller egenskapsnamn, `Exclude`. Utan `Column` visas alla enkla egenskaper |
+| Per kolumn | `Header`, `Format`, `Value`, `NullText`, `Bool`, `Chip`, `Link`, `AlignLeft/Center/Right`, `Width`, `MinWidth`, `MaxWidth`, `RelativeWidth`, `Ellipsis` |
+| Summering | `Sum`, `Average`, `Count`, `Min`, `Max`, `Total`. Summor visas per grupp och totalt |
+| Utseende | `Branding` (logotyp, företagsnamn, färger, tema, fonter), `Density`, `FontSize`, `Zebra`, `Paper`, `Landscape`, `Portrait`, `Margins` |
+| Sidhuvud och sidfot | `Title`, `Summary`, `KeyFigure`, `Footer`, `Timestamp`, `Author` |
+| Språk | `Culture` (standard sv-SE), `Texts` (`ReportTexts.English()` för engelska) |
+
+- Data som ska till Excel tas säkrast från CSV-bilagan (`AttachCsv`). Kopiering direkt ur tabellen beror på PDF-läsaren.
+- Med `Timestamp` ger samma indata identiska filer.
+- Rapporter är taggade för tillgänglighet. `Tagged(false)` ger mindre filer för mycket stora tabeller.
+- Läggs en rapport till i en annan PDF med `Append` följer sidorna med, men inte taggar, bokmärken och bilagor.
+- Fel ger `PdfFormException` med kolumn och rad när det är känt.
+
 ## Begränsningar
 
 - Fält du ändrar ritas med Helvetica (eller Liberation Sans för tecken utanför WinAnsi). Fontval i mallens `/DA` (t.ex. fet stil) ignoreras för dessa, men storlek, färg och justering respekteras. Storlek `0` ger automatisk storlek.
@@ -242,6 +280,7 @@ doc.Append(bilaga, fieldPrefix: "bilaga")          // bilagans fält heter nu "b
 dotnet build -c Release
 dotnet pack src/PdfFormFiller/PdfFormFiller.csproj -c Release -o nupkg
 dotnet pack src/PdfFormFiller.Widgets/PdfFormFiller.Widgets.csproj -c Release -o nupkg
+dotnet pack src/PdfFormFiller.Reports/PdfFormFiller.Reports.csproj -c Release -o nupkg
 ```
 
 Kräver .NET 8 SDK. Inga andra verktyg eller paket behövs.

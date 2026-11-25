@@ -7,7 +7,7 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>PdfFormFiller.Widgets</RootNamespace>
     <PackageId>PdfFormFiller.Widgets</PackageId>
-    <Version>0.6.1</Version>
+    <Version>0.7.0</Version>
     <Description>Widget-style form API (PdfDocument, PdfFormWidget, PdfTextBoxFieldWidget ...) on top of PdfFormFiller, for code that works with typed field objects.</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>CS1591</NoWarn>

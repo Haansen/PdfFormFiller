@@ -46,6 +46,8 @@ internal sealed class ReportRenderer
 
     private void Run()
     {
+        if (_def.Tables.Count == 0 && _def.Facts.Count == 0 && _def.KeyFigures.Count == 0)
+            throw new PdfFormException("The report has no content. Add a table with Section, or use PdfReport.Create(items).");
         var title = _bold.Clean(_def.Title).Trim();
         var info = _pdf.Info;
         info.Title = title.Length > 0 ? title : null;
@@ -436,7 +438,12 @@ internal sealed class ReportRenderer
         var chars = s.Select(c => char.IsControl(c) || char.IsSurrogate(c) || char.GetUnicodeCategory(c) is UnicodeCategory.Format or UnicodeCategory.OtherNotAssigned || "\\/:*?\"<>|".Contains(c) ? ' ' : c).ToArray();
         var name = string.Join(' ', new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries)).Trim('.', ' ');
         if (name.Length > 80) name = name[..80].Trim();
-        return name.Length > 0 ? name : "data";
+        if (name.Length == 0) return "data";
+        // device names, which Windows does not accept with any extension
+        var stem = name.Split('.')[0].TrimEnd().ToUpperInvariant();
+        var device = stem is "CON" or "PRN" or "AUX" or "NUL" or "CONIN$" or "CONOUT$"
+                     || stem.Length == 4 && (stem.StartsWith("COM", StringComparison.Ordinal) || stem.StartsWith("LPT", StringComparison.Ordinal)) && "123456789\u00B9\u00B2\u00B3".Contains(stem[3]);
+        return device ? "_" + name : name;
     }
 
     // ------------------------------------------------------------------ tables
