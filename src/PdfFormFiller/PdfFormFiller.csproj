@@ -7,7 +7,9 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>PdfFormFiller</RootNamespace>
     <PackageId>PdfFormFiller</PackageId>
-    <Version>0.7.0</Version>
+    <!-- the embedded fonts are under OFL -->
+    <PackageLicenseExpression>MIT AND OFL-1.1</PackageLicenseExpression>
+    <Version>0.7.1</Version>
     <Description>Fill, flatten, merge and trim AcroForm PDFs. Self-contained, no third-party dependencies.</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>CS1591</NoWarn>

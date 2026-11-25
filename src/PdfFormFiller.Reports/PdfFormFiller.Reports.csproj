@@ -7,7 +7,7 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>PdfFormFiller.Reports</RootNamespace>
     <PackageId>PdfFormFiller.Reports</PackageId>
-    <Version>0.7.0</Version>
+    <Version>0.7.1</Version>
     <Description>Report and table PDFs generated from lists of objects, built on PdfFormFiller.</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>CS1591</NoWarn>
