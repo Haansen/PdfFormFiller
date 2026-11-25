@@ -38,6 +38,7 @@ internal static class PdfExt
         var a = widget.Arr("/Rect");
         if (a is null || a.Count < 4) return (0, 0, 0, 0);
         var x0 = a.RealAt(0); var y0 = a.RealAt(1); var x1 = a.RealAt(2); var y1 = a.RealAt(3);
+        if (!double.IsFinite(x0) || !double.IsFinite(y0) || !double.IsFinite(x1) || !double.IsFinite(y1)) return (0, 0, 0, 0);
         return (Math.Min(x0, x1), Math.Min(y0, y1), Math.Max(x0, x1), Math.Max(y0, y1));
     }
 
@@ -67,9 +68,17 @@ internal static class PdfExt
             if (ReferenceEquals(Resolve(a[i]), target)) a.RemoveAt(i);
     }
 
+    public static void RemoveWhere(this PdfArray a, Func<PdfObject, bool> predicate) => a.Items.RemoveAll(o => predicate(o));
+
     public static PdfArray NumberArray(params double[] values) => new(values.Select(v => (PdfObject)new PdfNumber(v)));
 
-    public static string Fmt(double v) => v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    /// <summary>Number as written into content streams: never "-0", "NaN" or "Infinity", which PDF readers reject.</summary>
+    public static string Fmt(double v)
+    {
+        if (!double.IsFinite(v)) return "0";
+        var s = v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+        return s == "-0" ? "0" : s;
+    }
 
     /// <summary>Page /Resources dictionary, created if missing.</summary>
     public static PdfDictionary Resources(this PdfDictionary page) => page.GetOrCreateDict("/Resources");

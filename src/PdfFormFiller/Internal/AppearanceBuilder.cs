@@ -57,28 +57,30 @@ internal sealed class AppearanceBuilder
     public static bool LacksAppearance(FieldNode field)
         => field.Widgets.Any(w => w.Dict("/AP")?.Dict("/N") is not PdfStream);
 
+    /// <summary>True once this builder has written or created at least one appearance stream in the document.</summary>
+    public bool Wrote { get; private set; }
+
+    /// <summary>
+    /// Regenerates the appearances of all widgets of a field. All streams are built first and installed afterwards, so
+    /// when drawing fails (strict character check) no widget of the field has been touched.
+    /// </summary>
     public void Rebuild(FieldNode field)
     {
-        switch (field.Type)
+        Func<PdfDictionary, PdfStream>? build = field.Type switch
         {
-            case FieldType.Text:
-                foreach (var w in field.Widgets) SetNormal(w, BuildText(field, w));
-                break;
-            case FieldType.Signature:
-            case FieldType.PushButton:
-            case FieldType.Unknown:
-                break;
-            case FieldType.ComboBox:
-                foreach (var w in field.Widgets) SetNormal(w, BuildCombo(field, w));
-                break;
-            case FieldType.ListBox:
-                foreach (var w in field.Widgets) SetNormal(w, BuildListBox(field, w));
-                break;
-            case FieldType.CheckBox:
-            case FieldType.RadioButton:
-                foreach (var w in field.Widgets) EnsureButtonStates(field, w);
-                break;
+            FieldType.Text => w => BuildText(field, w),
+            FieldType.ComboBox => w => BuildCombo(field, w),
+            FieldType.ListBox => w => BuildListBox(field, w),
+            _ => null,
+        };
+        if (build is not null)
+        {
+            var forms = field.Widgets.Select(w => (Widget: w, Form: build(w))).ToList();
+            foreach (var (w, form) in forms) SetNormal(w, form);
+            return;
         }
+        if (field.Type is FieldType.CheckBox or FieldType.RadioButton)
+            foreach (var w in field.Widgets) EnsureButtonStates(field, w);
     }
 
     // ------------------------------------------------------------------ text
@@ -216,8 +218,8 @@ internal sealed class AppearanceBuilder
         var da = field.DA(_acro);
         var fs = da.FontSize > 0 ? da.FontSize : 12;
         var lineH = fs * TextMeasurer.LineHeight;
-        var selected = SelectedValues(field);
         var options = field.Options();
+        var selected = SelectedOptionIndices(field, options);
         var texts = new List<string>();
         var uni = false;
         foreach (var (_, disp) in options)
@@ -232,8 +234,7 @@ internal sealed class AppearanceBuilder
         var y = h - bw - Pad;
         for (var i = topIndex; i < options.Count && y - lineH > -lineH; i++)
         {
-            var export = options[i].Export;
-            if (selected.Contains(export))
+            if (selected.Contains(i))
             {
                 sb.Append($"0.6 0.75 0.85 rg {Fmt(bw)} {Fmt(y - lineH)} {Fmt(w - 2 * bw)} {Fmt(lineH)} re f\n");
             }
@@ -244,17 +245,35 @@ internal sealed class AppearanceBuilder
         return MakeForm(sb.ToString(), w, h, widget, needsHelv: !uni, needsZaDb: false, needsUni: uni);
     }
 
-    private static HashSet<string> SelectedValues(FieldNode field)
+    /// <summary>
+    /// Indices of the highlighted options. /V (a string, or an array for multi-select) decides; /I only tells apart
+    /// options that share an export value, and stands in for /V when that is missing.
+    /// </summary>
+    private static HashSet<int> SelectedOptionIndices(FieldNode field, List<(string Export, string Display)> options)
     {
-        var set = new HashSet<string>();
+        var values = new HashSet<string>();
         switch (field.Dict.Inherited("/V"))
         {
-            case PdfString s: set.Add(s.Text); break;
+            case PdfString s: values.Add(s.Text); break;
             case PdfArray a:
-                foreach (var it in a.Items) if (Resolve(it) is PdfString s2) set.Add(s2.Text);
+                foreach (var it in a.Items) if (Resolve(it) is PdfString s2) values.Add(s2.Text);
                 break;
         }
-        return set;
+        var chosen = field.SelectedIndices();
+        var result = new HashSet<int>();
+        if (values.Count == 0)
+        {
+            foreach (var i in chosen) result.Add(i);
+            return result;
+        }
+        for (var i = 0; i < options.Count; i++)
+        {
+            var export = options[i].Export;
+            if (!values.Contains(export)) continue;
+            var disambiguated = chosen.Any(j => options[j].Export == export);
+            if (!disambiguated || chosen.Contains(i)) result.Add(i);
+        }
+        return result;
     }
 
     // ------------------------------------------------------------------ check box / radio
@@ -262,11 +281,9 @@ internal sealed class AppearanceBuilder
     /// <summary>Creates /AP /N/&lt;on&gt; and /AP /N/Off streams only when the widget has none (designer streams are kept).</summary>
     private void EnsureButtonStates(FieldNode field, PdfDictionary widget)
     {
-        var ap = widget.GetOrCreateDict("/AP");
-        var n = ap.Dict("/N");
-        if (n is not null && n is not PdfStream && n.Count > 0) return; // has state streams already
-        n = new PdfDictionary();
-        ap["/N"] = n;
+        var existing = widget.Dict("/AP")?.Dict("/N");
+        if (existing is not null && existing is not PdfStream && existing.Count > 0) return; // has state streams already
+        var n = new PdfDictionary();
 
         var on = field.StateName(widget);
         var (w, h) = Size(widget);
@@ -288,6 +305,8 @@ internal sealed class AppearanceBuilder
         var offForm = MakeForm(off.ToString(), w, h, widget, needsHelv: false, needsZaDb: false);
         n.SetRef("/" + on, onForm, _doc);
         n.SetRef("/Off", offForm, _doc);
+        widget.GetOrCreateDict("/AP")["/N"] = n;
+        Wrote = true;
     }
 
     private static double ZapfWidth(char c) => c switch
@@ -306,10 +325,10 @@ internal sealed class AppearanceBuilder
     private static double BorderWidth(PdfDictionary widget)
     {
         var bs = widget.Dict("/BS");
-        if (bs is not null) return bs.Real("/W") ?? 1;
-        var border = widget.Arr("/Border");
-        if (border is not null && border.Count >= 3) return border.RealAt(2);
-        return 1;
+        double width = 1;
+        if (bs is not null) width = bs.Real("/W") ?? 1;
+        else if (widget.Arr("/Border") is { Count: >= 3 } border) width = border.RealAt(2);
+        return double.IsFinite(width) ? Math.Clamp(width, 0, 50) : 1; // damaged values must not reach the drawing code
     }
 
     private static void DrawBackgroundAndBorder(StringBuilder sb, PdfDictionary widget, double w, double h, bool circle = false)
@@ -508,5 +527,6 @@ internal sealed class AppearanceBuilder
         ap.SetRef("/N", form, _doc);
         ap.Remove("/D"); // stale "down" appearance would show the old value while clicking
         ap.Remove("/R");
+        Wrote = true;
     }
 }

@@ -14,45 +14,142 @@ internal static class Flattener
     /// <param name="onlyWidgets">When given, only these widgets are flattened and the rest of the form is kept.</param>
     public static void Flatten(PdfDocument doc, HashSet<PdfDictionary>? onlyWidgets = null)
     {
-        for (var p = 0; p < doc.Pages.Count; p++)
+        var pages = doc.Pages;
+
+        // Decide everything from a snapshot taken before anything is removed: pages may share one /Annots array.
+        var perPage = new List<List<PdfDictionary>>(pages.Count);
+        var arrays = new List<PdfArray>();
+        var arraySeen = new HashSet<PdfArray>(ReferenceEqualityComparer.Instance);
+        var flattened = new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance);
+        foreach (var page in pages)
         {
-            var page = doc.Pages[p];
+            var list = new List<PdfDictionary>();
+            perPage.Add(list);
             var annots = page.Arr("/Annots");
             if (annots is null) continue;
-
-            var ops = new StringBuilder();
-            var toRemove = new List<PdfDictionary>();
-            var counter = 0;
-            foreach (var widget in annots.Dicts().ToList())
+            if (arraySeen.Add(annots)) arrays.Add(annots);
+            var onPage = new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance);
+            foreach (var widget in annots.Dicts())
             {
                 if (!widget.IsWidget()) continue;
                 if (onlyWidgets is not null && !onlyWidgets.Contains(widget)) continue;
-                toRemove.Add(widget);
+                flattened.Add(widget);
+                if (onPage.Add(widget)) list.Add(widget);
+            }
+        }
+
+        for (var p = 0; p < pages.Count; p++)
+        {
+            var page = pages[p];
+            if (perPage[p].Count == 0) continue;
+            var ops = new StringBuilder();
+            var counter = 0;
+            var propertyNames = new Dictionary<PdfDictionary, string>(ReferenceEqualityComparer.Instance);
+            foreach (var widget in perPage[p])
+            {
                 var flags = widget.Int("/F") ?? 0;
                 if ((flags & FlagHidden) != 0 || (flags & FlagNoView) != 0) continue;
                 var form = NormalAppearance(widget);
                 if (form is null) continue;
+                var placement = Placement(widget, form, out var skip);
+                if (skip) continue; // empty rectangle: nothing visible to draw
                 var name = UniqueName(page, ref counter);
                 if (!form.ContainsKey("/Subtype")) form["/Subtype"] = new PdfName("/Form");
                 if (!form.ContainsKey("/Type")) form["/Type"] = new PdfName("/XObject");
                 page.Resources().GetOrCreateDict("/XObject").SetRef(name, form, doc);
-                ops.Append(Placement(widget, form, name));
+
+                // Keep optional-content visibility: a widget in a layer that is switched off stays invisible.
+                var oc = widget.Dict("/OC");
+                string? ocName = null;
+                if (oc is not null && !propertyNames.TryGetValue(oc, out ocName))
+                {
+                    ocName = UniquePropertyName(page, ref counter);
+                    page.Resources().GetOrCreateDict("/Properties").SetRef(ocName, oc, doc);
+                    propertyNames[oc] = ocName;
+                }
+                if (ocName is not null) ops.Append("/OC ").Append(ocName).Append(" BDC\n");
+                ops.Append(placement.Replace("{name}", name));
+                if (ocName is not null) ops.Append("EMC\n");
             }
 
-            foreach (var w in toRemove) annots.RemoveObjectRef(w);
-            if (annots.Count == 0) page.Remove("/Annots");
-
             if (ops.Length > 0)
-                page.WrapContents(doc, Encoding.ASCII.GetBytes("q\n"), Encoding.ASCII.GetBytes("Q\n" + ops));
+            {
+                var balance = ContentBalance.Analyze(ContentBytes(page));
+                var epilogue = balance?.Epilogue() ?? "Q\n";
+                page.WrapContents(doc, Encoding.ASCII.GetBytes("q\n"), Encoding.ASCII.GetBytes(epilogue + ops));
+            }
         }
+
+        RemoveStructureReferences(doc, flattened);
+        foreach (var annots in arrays) annots.RemoveWhere(item => Resolve(item) is PdfDictionary d && flattened.Contains(d));
+        foreach (var page in pages)
+            if (page.Arr("/Annots") is { Count: 0 }) page.Remove("/Annots");
+
         if (onlyWidgets is null)
         {
             doc.Catalog.Remove("/AcroForm");
+            doc.Catalog.Remove("/NeedsRendering");
             doc.Catalog.Remove("/Perms"); // certification/usage-rights signatures no longer apply to a flattened file
             return;
         }
         FieldTree.PruneOrphans(doc);
         if ((FieldTree.AcroForm(doc)?.Arr("/Fields")?.Count ?? 0) == 0) doc.Catalog.Remove("/AcroForm");
+    }
+
+    /// <summary>
+    /// Tagged PDFs reference form widgets from the structure tree (/OBJR). Left in place they would keep the removed widgets,
+    /// and through /Parent the whole field tree, alive in the output, and point at annotations that no longer exist.
+    /// </summary>
+    private static void RemoveStructureReferences(PdfDocument doc, HashSet<PdfDictionary> removed)
+    {
+        if (removed.Count == 0 || doc.Catalog.Dict("/StructTreeRoot") is not { } root) return;
+        var seen = new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance) { root };
+        var work = new Stack<PdfDictionary>();
+        work.Push(root);
+        while (work.Count > 0 && seen.Count < 1_000_000)
+        {
+            var node = work.Pop();
+            switch (Resolve(node["/K"]))
+            {
+                case PdfDictionary single:
+                    if (IsRemovedReference(single, removed)) node.Remove("/K");
+                    else if (seen.Add(single)) work.Push(single);
+                    break;
+                case PdfArray kids:
+                    kids.RemoveWhere(item => Resolve(item) is PdfDictionary d && IsRemovedReference(d, removed));
+                    foreach (var kid in kids.Dicts()) if (seen.Add(kid)) work.Push(kid);
+                    break;
+            }
+        }
+    }
+
+    private static bool IsRemovedReference(PdfDictionary d, HashSet<PdfDictionary> removed)
+        => d.Name("/Type") == "/OBJR" && d.Dict("/Obj") is { } target && removed.Contains(target);
+
+    /// <summary>The page's decoded content, or empty when it cannot be decoded (the page is then treated as balanced).</summary>
+    private static byte[] ContentBytes(PdfDictionary page)
+    {
+        try
+        {
+            using var ms = new MemoryStream();
+            void Add(PdfObject? o)
+            {
+                if (o is not PdfStream s) return;
+                var bytes = s.Decoded();
+                ms.Write(bytes, 0, bytes.Length);
+                ms.WriteByte((byte)'\n');
+            }
+            switch (Resolve(page["/Contents"]))
+            {
+                case PdfStream s: Add(s); break;
+                case PdfArray a: foreach (var it in a.Items) Add(Resolve(it)); break;
+            }
+            return ms.ToArray();
+        }
+        catch (Exception ex) when (ex is PdfFormException or InvalidDataException or InvalidOperationException or IndexOutOfRangeException or ArgumentException)
+        {
+            return Array.Empty<byte>();
+        }
     }
 
     private static PdfStream? NormalAppearance(PdfDictionary widget)
@@ -74,10 +171,25 @@ internal static class Flattener
         }
     }
 
-    /// <summary>PDF 32000-1 §12.5.5 algorithm: map the appearance's transformed BBox onto the annotation /Rect.</summary>
-    private static string Placement(PdfDictionary widget, PdfDictionary form, string name)
+    private static string UniquePropertyName(PdfDictionary page, ref int counter)
     {
+        var props = page.Dict("/Resources")?.Dict("/Properties");
+        while (true)
+        {
+            var name = $"/PfOC{counter++}";
+            if (props is null || !props.ContainsKey(name)) return name;
+        }
+    }
+
+    /// <summary>
+    /// PDF 32000-1 §12.5.5 algorithm: map the appearance's transformed BBox onto the annotation /Rect. The XObject name is
+    /// the placeholder <c>{name}</c>. <paramref name="skip"/> is set when the rectangle is empty or the numbers are unusable.
+    /// </summary>
+    private static string Placement(PdfDictionary widget, PdfDictionary form, out bool skip)
+    {
+        skip = true;
         var (rx0, ry0, rx1, ry1) = widget.Rect();
+        if (!(rx1 - rx0 > 0) || !(ry1 - ry0 > 0)) return string.Empty;
         var bbox = form.Arr("/BBox");
         double bx0 = 0, by0 = 0, bx1 = 1, by1 = 1;
         if (bbox is not null && bbox.Count >= 4)
@@ -103,6 +215,8 @@ internal static class Flattener
         var sy = ty1 - ty0 > 1e-6 ? (ry1 - ry0) / (ty1 - ty0) : 1;
         var ex = rx0 - tx0 * sx;
         var ey = ry0 - ty0 * sy;
-        return $"q {Fmt(sx)} 0 0 {Fmt(sy)} {Fmt(ex)} {Fmt(ey)} cm {name} Do Q\n";
+        if (!double.IsFinite(sx) || !double.IsFinite(sy) || !double.IsFinite(ex) || !double.IsFinite(ey)) return string.Empty;
+        skip = false;
+        return $"q {Fmt(sx)} 0 0 {Fmt(sy)} {Fmt(ex)} {Fmt(ey)} cm {{name}} Do Q\n";
     }
 }

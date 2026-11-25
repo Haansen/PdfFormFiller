@@ -36,12 +36,17 @@ internal sealed class PdfNumber : PdfObject
     public PdfNumber(double v)
     {
         Value = v;
-        IsInteger = Math.Abs(v - Math.Round(v)) < 1e-9 && Math.Abs(v) < 1e15;
+        IsInteger = v == Math.Round(v) && Math.Abs(v) < 1e15;
     }
 
-    public override string ToString() => IsInteger
-        ? LongValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
-        : Value.ToString("0.#####", System.Globalization.CultureInfo.InvariantCulture);
+    public override string ToString()
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        if (IsInteger) return LongValue.ToString(inv);
+        if (!double.IsFinite(Value)) return "0";
+        var s = Value.ToString("G12", inv);
+        return s.Contains('E') ? Value.ToString("0.####################", inv) : s; // PDF has no exponent notation
+    }
 }
 
 internal sealed class PdfName : PdfObject
@@ -196,8 +201,33 @@ internal static class PdfDocEncoding
         'Ÿ', 'Ž', 'ı', 'ł', 'œ', 'š', 'ž', '�', '€',
     };
 
+    private static readonly char[] Accents = { '\u02D8', '\u02C7', '\u02C6', '\u02D9', '\u02DD', '\u02DB', '\u02DA', '\u02DC' }; // 0x18..0x1F
+
+    /// <summary>Encodes text as PDFDocEncoding (composed first, so "a" + ring becomes å). False when a character has no code.</summary>
+    public static bool TryEncode(string text, out byte[] bytes)
+    {
+        bytes = Array.Empty<byte>();
+        try { text = text.Normalize(NormalizationForm.FormC); }
+        catch (ArgumentException) { return false; } // unpaired surrogates
+        var result = new byte[text.Length];
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            int code = c;
+            if (c > 0xFF || ToChar((byte)c) != c)
+            {
+                code = c == '\uFFFD' ? -1 : Array.IndexOf(Accents, c) is var a && a >= 0 ? 0x18 + a : Array.IndexOf(High, c) is var h && h >= 0 ? 0x80 + h : -1;
+                if (code < 0) return false;
+            }
+            result[i] = (byte)code;
+        }
+        bytes = result;
+        return true;
+    }
+
     public static char ToChar(byte b)
     {
+        if (b is >= 0x18 and <= 0x1F) return Accents[b - 0x18];
         if (b >= 0x80 && b <= 0xA0) return High[b - 0x80];
         return (char)b;
     }

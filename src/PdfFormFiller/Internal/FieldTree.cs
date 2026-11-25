@@ -37,14 +37,43 @@ internal sealed class FieldNode
         return list;
     }
 
+    /// <summary>
+    /// Current value. For a multi-select list box (/V is an array) this is the first selected value. When a choice
+    /// field has no /V but a valid /I, the value of the option /I points at is used. /V always wins over /I.
+    /// </summary>
     public string? ValueString()
-        => Dict.Inherited("/V") switch
+    {
+        var v = Dict.Inherited("/V") switch
         {
             PdfString s => s.Text,
             PdfName n => n.Bare,
             PdfArray a when a.Count > 0 => (PdfExt.Resolve(a[0]) as PdfString)?.Text,
             _ => null,
         };
+        if (Type == FieldType.RadioButton && v is not null)
+        {
+            // with /Opt the stored value is the appearance state ("0", "1", ...); report the matching export value
+            var w = Widgets.FirstOrDefault(x => StateName(x) == v);
+            return w is null ? v : ExportValue(w);
+        }
+        if (v is not null || Type is not (FieldType.ComboBox or FieldType.ListBox)) return v;
+        var chosen = SelectedIndices();
+        if (chosen.Count == 0) return null;
+        var opts = Options();
+        return chosen[0] < opts.Count ? opts[chosen[0]].Export : null;
+    }
+
+    /// <summary>Valid, ascending option indices from /I; empty when /I is absent or malformed.</summary>
+    public List<int> SelectedIndices()
+    {
+        var result = new List<int>();
+        if (Dict.Inherited("/I") is not PdfArray a) return result;
+        var count = Options().Count;
+        foreach (var raw in a.Items)
+            if (PdfExt.Resolve(raw) is PdfNumber n && n.IsInteger && n.Value >= 0 && n.Value < count) result.Add((int)n.Value);
+        result.Sort();
+        return result;
+    }
 
     public DefaultAppearance DA(PdfDictionary? acroForm)
     {
@@ -71,12 +100,28 @@ internal sealed class FieldNode
     }
 
     /// <summary>Export value of a radio widget: /Opt entry when present, otherwise the state name.</summary>
-    public string ExportValue(PdfDictionary widget)
+    public string ExportValue(PdfDictionary widget) => ButtonOption(widget, Options()).Export;
+
+    /// <summary>Distinct (export value, display text) pairs of a check box or radio group, in widget order.</summary>
+    public List<(string Export, string Display)> ButtonOptions()
+    {
+        var opt = Options();
+        var result = new List<(string, string)>();
+        var seen = new HashSet<string>();
+        foreach (var w in Widgets)
+        {
+            var o = ButtonOption(w, opt);
+            if (seen.Add(o.Export)) result.Add(o);
+        }
+        return result;
+    }
+
+    private (string Export, string Display) ButtonOption(PdfDictionary widget, List<(string Export, string Display)> opt)
     {
         var state = StateName(widget);
-        var opt = Options();
-        if (opt.Count > 0 && int.TryParse(state, out var i) && i >= 0 && i < opt.Count) return opt[i].Export;
-        return state;
+        if (opt.Count > 0 && int.TryParse(state, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var i) && i < opt.Count)
+            return opt[i];
+        return (state, state);
     }
 }
 
@@ -121,8 +166,11 @@ internal static class FieldTree
         var name = partial is null ? prefix : prefix is null ? partial : prefix + "." + partial;
 
         var kids = node.Arr("/Kids")?.Dicts().ToList() ?? new List<PdfDictionary>();
-        var childFields = kids.Where(k => k.ContainsKey("/T")).ToList();
-        var widgetKids = kids.Where(k => !k.ContainsKey("/T") && k.IsWidget()).ToList();
+        // A kid is a child field when it is named, or when it is an unnamed non-widget node with kids of its own
+        // (a naming-free intermediate level some producers emit). Unnamed widgets are the field's own widgets.
+        static bool IsChildField(PdfDictionary k) => k.ContainsKey("/T") || (!k.IsWidget() && k.ContainsKey("/Kids"));
+        var childFields = kids.Where(IsChildField).ToList();
+        var widgetKids = kids.Where(k => !IsChildField(k) && k.IsWidget()).ToList();
 
         if (childFields.Count > 0)
         {

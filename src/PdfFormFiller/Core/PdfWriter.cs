@@ -20,34 +20,40 @@ internal static class PdfWriter
             {
                 var target = r.Target;
                 if (target is PdfNull) return;
-                if (!numbers.ContainsKey(target)) { numbers[target] = ordered.Count + 1; ordered.Add(target); queue.Enqueue(target); }
+                Number(target);
                 return;
             }
-            if (doc.IsIndirect(o) && o is not PdfDictionary && o is not PdfArray)
-            {
-                // scalar registered as indirect: still inline it, simpler
-            }
+            // A container registered as indirect is referenced even where it is held directly, or it would be written twice.
+            // Streams are always indirect.
+            if (o is PdfStream || (o is PdfDictionary or PdfArray && doc.IsIndirect(o))) Number(o);
+            else VisitChildren(o);
+        }
+
+        void Number(PdfObject o)
+        {
+            if (!numbers.TryAdd(o, ordered.Count + 1)) return;
+            ordered.Add(o);
+            queue.Enqueue(o);
+        }
+
+        void VisitChildren(PdfObject o)
+        {
             switch (o)
             {
+                case PdfReference r: Visit(r); break; // an indirect object that is itself just a reference
                 case PdfArray a: foreach (var it in a.Items) Visit(it); break;
-                case PdfDictionary d: foreach (var kv in d.Entries) Visit(kv.Value); break;
+                case PdfDictionary d:
+                    if (d is PdfStream st) st["/Length"] = new PdfNumber(st.Raw.Length); // a separate length object is no longer needed
+                    foreach (var kv in d.Entries) Visit(kv.Value);
+                    break;
             }
         }
 
         var trailer = new PdfDictionary();
-        foreach (var kv in doc.Trailer.Entries)
-            if (kv.Key is "/Root" or "/Info") trailer[kv.Key] = kv.Value;
         trailer["/Root"] = doc.RefFor(doc.Catalog);
-        Visit(trailer);
-        while (queue.Count > 0)
-        {
-            var o = queue.Dequeue();
-            switch (o)
-            {
-                case PdfArray a: foreach (var it in a.Items) Visit(it); break;
-                case PdfDictionary d: foreach (var kv in d.Entries) Visit(kv.Value); break;
-            }
-        }
+        if (doc.Trailer.Dict("/Info") is { } info) trailer["/Info"] = doc.RefFor(info); // must be indirect
+        VisitChildren(trailer);
+        while (queue.Count > 0) VisitChildren(queue.Dequeue());
 
         // 2. write
         var ms = new MemoryStream();
@@ -58,7 +64,7 @@ internal static class PdfWriter
         {
             offsets[i + 1] = ms.Position;
             W($"{i + 1} 0 obj\n");
-            WriteObject(ms, ordered[i], numbers, doc);
+            WriteObject(ms, ordered[i], numbers, topLevel: true);
             W("\nendobj\n");
         }
         var xrefPos = ms.Position;
@@ -69,14 +75,19 @@ internal static class PdfWriter
         trailer["/Size"] = new PdfNumber(ordered.Count + 1);
         trailer["/ID"] = new PdfArray(new PdfString(id, hex: true), new PdfString(id, hex: true));
         W("trailer\n");
-        WriteObject(ms, trailer, numbers, doc);
+        WriteObject(ms, trailer, numbers, topLevel: true);
         W($"\nstartxref\n{xrefPos}\n%%EOF\n");
         return ms.ToArray();
     }
 
-    private static void WriteObject(MemoryStream ms, PdfObject o, Dictionary<PdfObject, int> numbers, PdfDocument doc)
+    private static void WriteObject(MemoryStream ms, PdfObject o, Dictionary<PdfObject, int> numbers, bool topLevel = false)
     {
         void W(string s) { var b = Encoding.Latin1.GetBytes(s); ms.Write(b, 0, b.Length); }
+        if (!topLevel && o is PdfDictionary or PdfArray && numbers.TryGetValue(o, out var own))
+        {
+            W($"{own} 0 R");
+            return;
+        }
         switch (o)
         {
             case PdfReference r:
@@ -91,30 +102,29 @@ internal static class PdfWriter
             case PdfNumber n: W(n.ToString()); break;
             case PdfName name: W(EscapeName(name.Value)); break;
             case PdfString s: WriteString(ms, s); break;
-            case PdfKeyword k: W(k.Text); break;
+            case PdfKeyword: W("null"); break; // junk from a damaged file; written out it would break the syntax around it
             case PdfArray a:
                 W("[");
                 for (var i = 0; i < a.Count; i++)
                 {
                     if (i > 0) W(" ");
-                    WriteObject(ms, a[i], numbers, doc);
+                    WriteObject(ms, a[i], numbers);
                 }
                 W("]");
                 break;
             case PdfStream st:
-                st["/Length"] = new PdfNumber(st.Raw.Length);
-                WriteDict(ms, st, numbers, doc);
+                WriteDict(ms, st, numbers);
                 W("\nstream\n");
                 ms.Write(st.Raw, 0, st.Raw.Length);
                 W("\nendstream");
                 break;
             case PdfDictionary d:
-                WriteDict(ms, d, numbers, doc);
+                WriteDict(ms, d, numbers);
                 break;
         }
     }
 
-    private static void WriteDict(MemoryStream ms, PdfDictionary d, Dictionary<PdfObject, int> numbers, PdfDocument doc)
+    private static void WriteDict(MemoryStream ms, PdfDictionary d, Dictionary<PdfObject, int> numbers)
     {
         void W(string s) { var b = Encoding.Latin1.GetBytes(s); ms.Write(b, 0, b.Length); }
         W("<<");
@@ -122,7 +132,7 @@ internal static class PdfWriter
         {
             W(EscapeName(kv.Key));
             W(" ");
-            WriteObject(ms, kv.Value, numbers, doc);
+            WriteObject(ms, kv.Value, numbers);
             W("\n");
         }
         W(">>");

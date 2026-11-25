@@ -5,7 +5,8 @@ namespace PdfFormFiller.Core;
 
 /// <summary>
 /// Standard security handler (ISO 32000-1 §7.6.3, ISO 32000-2 for R6). Decrypts documents that open without a
-/// user password (the common "owner password only" protection). Output is always written unencrypted.
+/// user password (the common "owner password only" protection) or with a given user or owner password. Output is always
+/// written unencrypted.
 /// </summary>
 internal sealed class Decryptor
 {
@@ -27,65 +28,186 @@ internal sealed class Decryptor
         _key = key; _streams = streams; _strings = strings; _encryptMetadata = encryptMetadata;
     }
 
-    public static Decryptor Create(PdfDictionary enc, byte[] firstId)
+    /// <summary>
+    /// Derives the file key. The empty user password is always tried first; then <paramref name="password"/>, as user and as
+    /// owner password. The password itself is not kept.
+    /// </summary>
+    public static Decryptor Create(PdfDictionary enc, byte[] firstId, string? password = null)
     {
         var filter = enc.Name("/Filter");
         if (filter != "/Standard") throw new PdfFormException($"Unsupported encryption handler {filter}.");
         var v = enc.Int("/V") ?? 0;
         var r = enc.Int("/R") ?? 2;
-        var lengthBits = enc.Int("/Length") ?? 40;
+        if (r is < 2 or > 6 || v > 5) throw new PdfFormException($"Unsupported encryption version (V {v}, R {r}).");
         var o = enc.StrObj("/O")?.Bytes ?? throw new PdfFormException("Encrypt dictionary lacks /O.");
         var u = enc.StrObj("/U")?.Bytes ?? throw new PdfFormException("Encrypt dictionary lacks /U.");
         var p = unchecked((int)(uint)(enc.Long("/P") ?? -1)); // some writers store /P as an unsigned 32-bit value
-        var encryptMetadata = enc.Bool("/EncryptMetadata") ?? true;
+        var encryptMetadata = v < 4 || (enc.Bool("/EncryptMetadata") ?? true);
 
         var stmf = Method.Rc4; var strf = Method.Rc4;
+        int? filterLength = null;
         if (v >= 4)
         {
-            stmf = CryptFilterMethod(enc, enc.Name("/StmF") ?? "/Identity", ref lengthBits);
-            strf = CryptFilterMethod(enc, enc.Name("/StrF") ?? "/Identity", ref lengthBits);
+            stmf = CryptFilterMethod(enc, enc.Name("/StmF") ?? "/Identity", ref filterLength);
+            strf = CryptFilterMethod(enc, enc.Name("/StrF") ?? "/Identity", ref filterLength);
         }
 
-        byte[] key;
+        byte[]? key;
         if (r >= 5)
         {
-            key = ComputeKeyR6(r, u, enc.StrObj("/UE")?.Bytes ?? throw new PdfFormException("Encrypt dictionary lacks /UE."))
-                  ?? throw new PdfFormException("The PDF requires a password to open.");
+            var ue = enc.StrObj("/UE")?.Bytes ?? throw new PdfFormException("Encrypt dictionary lacks /UE.");
+            key = UserKeyR6(r, Array.Empty<byte>(), u, ue);
+            if (key is null && !string.IsNullOrEmpty(password))
+            {
+                var oe = enc.StrObj("/OE")?.Bytes;
+                foreach (var pw in PasswordBytesR6(password))
+                {
+                    key = UserKeyR6(r, pw, u, ue) ?? OwnerKeyR6(r, pw, o, oe, u);
+                    if (key is not null) break;
+                }
+            }
         }
         else
         {
-            var n = r == 2 ? 5 : Math.Clamp(lengthBits / 8, 5, 16);
-            key = ComputeKeyLegacy(r, n, o, p, firstId, encryptMetadata);
-            if (!ValidateUserLegacy(r, key, u, firstId))
-                throw new PdfFormException("The PDF requires a password to open.");
+            var lengths = KeyLengths(v, r, enc.Int("/Length"), filterLength, stmf == Method.AesV2 || strf == Method.AesV2);
+            key = UserKeyLegacy(r, lengths, Pad, o, u, p, firstId, encryptMetadata);
+            if (key is null && !string.IsNullOrEmpty(password) && PdfDocEncoding.TryEncode(password, out var pw))
+            {
+                var padded = PadPassword(pw);
+                key = UserKeyLegacy(r, lengths, padded, o, u, p, firstId, encryptMetadata)
+                      ?? OwnerKeyLegacy(r, lengths, padded, o, u, p, firstId, encryptMetadata);
+            }
         }
+        if (key is null)
+            throw new PdfFormException(string.IsNullOrEmpty(password)
+                ? "The PDF requires a password to open."
+                : "The supplied password is incorrect for this PDF.");
         return new Decryptor(key, stmf, strf, encryptMetadata);
     }
 
-    private static Method CryptFilterMethod(PdfDictionary enc, string name, ref int lengthBits)
+    private static Method CryptFilterMethod(PdfDictionary enc, string name, ref int? length)
     {
         if (name == "/Identity") return Method.None;
-        var cf = enc.Dict("/CF")?.Dict(name);
-        if (cf is null) return Method.None;
-        var len = cf.Int("/Length");
-        if (len is not null) lengthBits = len.Value <= 40 ? len.Value * 8 : len.Value;
+        var cf = enc.Dict("/CF")?.Dict(name) ?? throw new PdfFormException($"Encrypt dictionary lacks the crypt filter {name}.");
+        length ??= cf.Int("/Length");
         return cf.Name("/CFM") switch
         {
             "/AESV2" => Method.AesV2,
             "/AESV3" => Method.AesV3,
             "/V2" => Method.Rc4,
-            "/None" => Method.None,
-            _ => Method.None,
+            "/None" or null => Method.None,
+            var other => throw new PdfFormException($"Unsupported crypt filter method {other}."),
         };
+    }
+
+    // ------------------------------------------------------------------ passwords
+
+    /// <summary>First 32 bytes of the password, filled up with the standard padding.</summary>
+    private static byte[] PadPassword(byte[] password)
+    {
+        var padded = new byte[32];
+        var n = Math.Min(32, password.Length);
+        Array.Copy(password, padded, n);
+        Array.Copy(Pad, 0, padded, n, 32 - n);
+        return padded;
+    }
+
+    /// <summary>
+    /// UTF-8 forms of an R5/R6 password, at most 127 bytes each: after the SASLprep mappings and NFKC (RFC 4013 §2.1 and
+    /// §2.2; nothing is prohibited, since the point is to open files), then verbatim for writers that skip the preparation.
+    /// </summary>
+    private static List<byte[]> PasswordBytesR6(string password)
+    {
+        var list = new List<byte[]>();
+        void Add(Func<string> form)
+        {
+            byte[] bytes;
+            try { bytes = new UTF8Encoding(false, throwOnInvalidBytes: true).GetBytes(form()); }
+            catch (ArgumentException) { return; } // unpaired surrogates: no valid encoding
+            if (bytes.Length > 127) bytes = bytes.AsSpan(0, 127).ToArray();
+            if (bytes.Length > 0 && !list.Any(b => b.AsSpan().SequenceEqual(bytes))) list.Add(bytes);
+        }
+        Add(() =>
+        {
+            var sb = new StringBuilder(password.Length);
+            foreach (var c in password)
+            {
+                // mapped to nothing (RFC 3454 B.1)
+                if (c is '\u00AD' or '\u034F' or '\u1806' or (>= '\u180B' and <= '\u180D') or (>= '\u200B' and <= '\u200D')
+                    or '\u2060' or (>= '\uFE00' and <= '\uFE0F') or '\uFEFF') continue;
+                // non-ASCII spaces (RFC 3454 C.1.2)
+                sb.Append(c is '\u00A0' or '\u1680' or (>= '\u2000' and <= '\u200A') or '\u202F' or '\u205F' or '\u3000' ? ' ' : c);
+            }
+            return sb.ToString().Normalize(NormalizationForm.FormKC);
+        });
+        Add(() => password);
+        return list;
     }
 
     // ------------------------------------------------------------------ key computation
 
-    private static byte[] ComputeKeyLegacy(int r, int n, byte[] o, int p, byte[] id, bool encryptMetadata)
+    /// <summary>
+    /// Key lengths in bytes to try for R2-R4, most likely first. /Length is unreliable in practice (missing, or in bytes
+    /// instead of bits), and the /U check tells a wrong guess apart, so the two usual lengths always get a chance.
+    /// </summary>
+    private static List<int> KeyLengths(int v, int r, int? dictLength, int? filterLength, bool aes)
+    {
+        if (r == 2) return new List<int> { 5 };
+        var declared = v switch
+        {
+            1 => 5,
+            >= 4 => aes ? 16 : KeyBytes(filterLength) ?? KeyBytes(dictLength) ?? 16,
+            _ => KeyBytes(dictLength) ?? 5,
+        };
+        return new[] { declared, 16, 5, KeyBytes(filterLength) ?? 16, KeyBytes(dictLength) ?? 16 }.Distinct().ToList();
+    }
+
+    private static int? KeyBytes(int? length) => length switch
+    {
+        >= 5 and <= 16 => length,          // written in bytes
+        >= 40 => Math.Min(length.Value / 8, 16),
+        _ => null,
+    };
+
+    private static byte[]? UserKeyLegacy(int r, List<int> lengths, byte[] padded, byte[] o, byte[] u, int p, byte[] id, bool encryptMetadata)
+    {
+        foreach (var n in lengths)
+        {
+            var key = ComputeKeyLegacy(r, n, padded, o, p, id, encryptMetadata);
+            if (ValidateUserLegacy(r, key, u, id)) return key;
+        }
+        return null;
+    }
+
+    /// <summary>Algorithm 7: the owner password decrypts /O, which gives the padded user password.</summary>
+    private static byte[]? OwnerKeyLegacy(int r, List<int> lengths, byte[] padded, byte[] o, byte[] u, int p, byte[] id, bool encryptMetadata)
+    {
+        if (o.Length < 32) return null;
+        var o32 = o.AsSpan(0, 32).ToArray();
+        foreach (var n in lengths)
+        {
+            // writers disagree on whether the 50 extra rounds hash the whole digest or only the key-length part of it
+            foreach (var part in r >= 3 && n < 16 ? new[] { 16, n } : new[] { 16 })
+            {
+                var hash = MD5.HashData(padded);
+                if (r >= 3)
+                    for (var i = 0; i < 50; i++) hash = MD5.HashData(hash.AsSpan(0, part));
+                var key = hash.AsSpan(0, n).ToArray();
+                var user = o32;
+                if (r == 2) user = Rc4(key, user);
+                else
+                    for (var i = 19; i >= 0; i--) user = Rc4(key.Select(b => (byte)(b ^ i)).ToArray(), user);
+                if (UserKeyLegacy(r, new List<int> { n }, user, o, u, p, id, encryptMetadata) is { } fileKey) return fileKey;
+            }
+        }
+        return null;
+    }
+
+    private static byte[] ComputeKeyLegacy(int r, int n, byte[] paddedPassword, byte[] o, int p, byte[] id, bool encryptMetadata)
     {
         using var md5 = MD5.Create();
         var ms = new MemoryStream();
-        ms.Write(Pad, 0, 32);                      // empty user password, padded
+        ms.Write(paddedPassword, 0, 32);
         ms.Write(o, 0, Math.Min(32, o.Length));
         ms.Write(BitConverter.GetBytes(p), 0, 4);  // little-endian signed
         ms.Write(id, 0, id.Length);
@@ -119,19 +241,24 @@ internal sealed class Decryptor
         return u.Length >= 16 && x2.AsSpan(0, 16).SequenceEqual(u.AsSpan(0, 16));
     }
 
-    private static byte[]? ComputeKeyR6(int r, byte[] u, byte[] ue)
+    /// <summary>File key from a user password (algorithm 2.A), or null when the password does not match /U.</summary>
+    private static byte[]? UserKeyR6(int r, byte[] pw, byte[] u, byte[] ue)
+        => u.Length < 48 ? null : KeyR6(r, pw, u, ue, Array.Empty<byte>(), "/UE");
+
+    /// <summary>File key from an owner password, or null when the password does not match /O.</summary>
+    private static byte[]? OwnerKeyR6(int r, byte[] pw, byte[] o, byte[]? oe, byte[] u)
+        => o.Length < 48 || u.Length < 48 ? null : KeyR6(r, pw, o, oe, u.AsSpan(0, 48).ToArray(), "/OE");
+
+    private static byte[]? KeyR6(int r, byte[] pw, byte[] check, byte[]? wrapped, byte[] udata, string wrappedName)
     {
-        if (u.Length < 48) return null;
-        var validationSalt = u.AsSpan(32, 8).ToArray();
-        var keySalt = u.AsSpan(40, 8).ToArray();
-        var pw = Array.Empty<byte>();
-        var hash = HashR6(r, pw, validationSalt, Array.Empty<byte>());
-        if (!hash.AsSpan(0, 32).SequenceEqual(u.AsSpan(0, 32))) return null;
-        var intermediate = HashR6(r, pw, keySalt, Array.Empty<byte>());
+        var hash = HashR6(r, pw, check.AsSpan(32, 8).ToArray(), udata);
+        if (!hash.AsSpan(0, 32).SequenceEqual(check.AsSpan(0, 32))) return null;
+        if (wrapped is null || wrapped.Length < 32) throw new PdfFormException($"Encrypt dictionary has a damaged {wrappedName}.");
         using var aes = Aes.Create();
-        aes.Key = intermediate; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.None; aes.IV = new byte[16];
+        aes.Key = HashR6(r, pw, check.AsSpan(40, 8).ToArray(), udata);
+        aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.None; aes.IV = new byte[16];
         using var dec = aes.CreateDecryptor();
-        return dec.TransformFinalBlock(ue, 0, 32);
+        return dec.TransformFinalBlock(wrapped, 0, 32);
     }
 
     /// <summary>Algorithm 2.B (R6) or plain SHA-256 (R5).</summary>
@@ -195,9 +322,9 @@ internal sealed class Decryptor
                 break;
             case PdfStream st:
             {
-                foreach (var kv in st.Entries.ToList()) Walk(kv.Value, num, gen, seen);
                 var type = st.Name("/Type");
                 if (type == "/XRef") break;
+                foreach (var kv in st.Entries.ToList()) Walk(kv.Value, num, gen, seen);
                 if (type == "/Metadata" && !_encryptMetadata) break;
                 var method = _streams;
                 var filters = Filters.NamesOf(st["/Filter"]);
@@ -210,7 +337,9 @@ internal sealed class Decryptor
                 break;
             }
             case PdfDictionary d:
-                foreach (var kv in d.Entries.ToList()) Walk(kv.Value, num, gen, seen);
+                foreach (var kv in d.Entries.ToList())
+                    if (kv.Key != "/Contents" || !d.ContainsKey("/ByteRange")) // a signature's /Contents is never encrypted
+                        Walk(kv.Value, num, gen, seen);
                 break;
         }
     }

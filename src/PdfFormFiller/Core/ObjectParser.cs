@@ -42,7 +42,11 @@ internal sealed class ObjectParser
                     var save2 = _lex.Position;
                     var t3 = _lex.Next();
                     if (t3.IsKeyword("R") && _doc is not null && IsInt(t.Text) && IsInt(t2.Text))
-                        return new PdfReference(_doc, ToInt(Lexer.ParseNumber(t.Text)), ToInt(Lexer.ParseNumber(t2.Text)));
+                    {
+                        var number = ToInt(Lexer.ParseNumber(t.Text));
+                        // numbers below 1 never name an object in a file; negative ones are used for objects created in memory
+                        return number <= 0 ? PdfNull.Instance : new PdfReference(_doc, number, ToInt(Lexer.ParseNumber(t2.Text)));
+                    }
                     _lex.Position = save2;
                 }
                 _lex.Position = save;
@@ -84,7 +88,8 @@ internal sealed class ObjectParser
                     var val = ParseFrom(vt, depth + 1);
                     if (val is not null) dict[k.Text] = val;
                 }
-                // stream?
+                // Stream? Only as an indirect object: after a nested dictionary the keyword belongs to the enclosing one, whose ">>" is missing.
+                if (depth > 0) return dict;
                 var save = _lex.Position;
                 var next = _lex.Next();
                 if (next.IsKeyword("stream")) return ReadStream(dict);
@@ -112,6 +117,9 @@ internal sealed class ObjectParser
 
     private static bool IsInt(string s) => s.Length > 0 && s.All(c => char.IsDigit(c) || c == '+' || c == '-') && s.Any(char.IsDigit);
 
+    /// <summary>True when the last stream's /Length was confirmed by "endstream" right after the data.</summary>
+    public bool StreamLengthVerified { get; private set; }
+
     private PdfStream ReadStream(PdfDictionary dict)
     {
         var buf = _lex.Buffer;
@@ -125,7 +133,7 @@ internal sealed class ObjectParser
         if (lenObj is PdfNumber ln) length = ln.LongValue;
         else if (lenObj is PdfReference lr)
         {
-            try { if (lr.Target is PdfNumber ln2) length = ln2.LongValue; } catch { length = -1; }
+            try { if (lr.Target is PdfNumber ln2) length = ln2.LongValue; } catch (PdfFormException) { length = -1; }
         }
 
         var valid = false;
@@ -137,6 +145,7 @@ internal sealed class ObjectParser
             while (q < limit && Lexer.IsWhitespace(buf[q])) q++;
             valid = Matches(buf, q, "endstream");
         }
+        StreamLengthVerified = valid;
         if (!valid)
         {
             var idx = _lex.IndexOf("endstream", start);

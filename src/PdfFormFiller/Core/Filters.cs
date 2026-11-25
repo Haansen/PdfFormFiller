@@ -8,26 +8,34 @@ internal static class Filters
     /// <summary>Upper bound for a single decoded stream. Stops decompression bombs from exhausting memory.</summary>
     public static long MaxDecodedBytes = 256L * 1024 * 1024;
 
-    private static void Guard(long length)
+    /// <summary>Real filter chains have one to three entries.</summary>
+    private const int MaxChain = 16;
+
+    private static void Guard(long length, long limit)
     {
-        if (length > MaxDecodedBytes)
-            throw new PdfFormException($"A stream in the PDF expands to more than {MaxDecodedBytes / (1024 * 1024)} MB; refusing to decode it. Raise PdfFormDocument.MaxDecodedStreamBytes if this file is legitimate.");
+        if (length <= limit) return;
+        if (limit < MaxDecodedBytes)
+            throw new PdfFormException($"An object or cross-reference stream in the PDF expands to more than {limit / (1024 * 1024)} MB, which is out of proportion to the file; refusing to decode it.");
+        throw new PdfFormException($"A stream in the PDF expands to more than {limit / (1024 * 1024)} MB; refusing to decode it. Raise PdfFormDocument.MaxDecodedStreamBytes if this file is legitimate.");
     }
 
-    public static byte[] Decode(PdfStream stream)
+    public static byte[] Decode(PdfStream stream) => Decode(stream, MaxDecodedBytes);
+
+    public static byte[] Decode(PdfStream stream, long limit)
     {
         var data = stream.Raw;
         var filters = NamesOf(stream["/Filter"]);
+        if (filters.Count > MaxChain) throw new PdfFormException("A stream in the PDF has an unreasonably long filter chain.");
         var parms = ParmsOf(stream["/DecodeParms"], filters.Count);
         for (var i = 0; i < filters.Count; i++)
         {
             data = filters[i] switch
             {
-                "/FlateDecode" or "/Fl" => Predictor(FlateDecode(data), parms[i]),
-                "/LZWDecode" or "/LZW" => Predictor(LzwDecode(data, parms[i]), parms[i]),
+                "/FlateDecode" or "/Fl" => Predictor(FlateDecode(data, limit), parms[i]),
+                "/LZWDecode" or "/LZW" => Predictor(LzwDecode(data, parms[i], limit), parms[i]),
                 "/ASCIIHexDecode" or "/AHx" => AsciiHexDecode(data),
-                "/ASCII85Decode" or "/A85" => Ascii85Decode(data),
-                "/RunLengthDecode" or "/RL" => RunLengthDecode(data),
+                "/ASCII85Decode" or "/A85" => Ascii85Decode(data, limit),
+                "/RunLengthDecode" or "/RL" => RunLengthDecode(data, limit),
                 _ => data, // DCTDecode, JPXDecode, CCITTFaxDecode, JBIG2Decode, Crypt: leave alone
             };
         }
@@ -66,21 +74,21 @@ internal static class Filters
         return ms.ToArray();
     }
 
-    public static byte[] FlateDecode(byte[] data)
+    private static byte[] FlateDecode(byte[] data, long limit)
     {
         if (data.Length == 0) return data;
         var start = 0;
         while (start < data.Length && Lexer.IsWhitespace(data[start])) start++;
-        var result = TryInflate(data, start, zlib: true);
+        var result = TryInflate(data, start, zlib: true, limit);
         if (result is null || result.Length == 0)
         {
             // corrupt zlib header? try raw deflate, with and without the 2-byte header
-            result = TryInflate(data, start, zlib: false) ?? TryInflate(data, start + 2, zlib: false) ?? Array.Empty<byte>();
+            result = TryInflate(data, start, zlib: false, limit) ?? TryInflate(data, start + 2, zlib: false, limit) ?? Array.Empty<byte>();
         }
         return result;
     }
 
-    private static byte[]? TryInflate(byte[] data, int offset, bool zlib)
+    private static byte[]? TryInflate(byte[] data, int offset, bool zlib, long limit)
     {
         if (offset >= data.Length) return null;
         try
@@ -95,7 +103,7 @@ internal static class Filters
                 while ((n = z.Read(buf, 0, buf.Length)) > 0)
                 {
                     output.Write(buf, 0, n);
-                    Guard(output.Length);
+                    Guard(output.Length, limit);
                 }
             }
             catch (InvalidDataException)
@@ -121,8 +129,8 @@ internal static class Filters
         var colors = parms.Int("/Colors") ?? 1;
         var bpc = parms.Int("/BitsPerComponent") ?? 8;
         var columns = parms.Int("/Columns") ?? 1;
-        if (colors < 1 || bpc < 1 || columns < 1 || (long)colors * bpc * columns > int.MaxValue / 2) return data;
-        var bpp = Math.Max(1, colors * bpc / 8);
+        if (colors is < 1 or > 256 || bpc is < 1 or > 32 || columns < 1 || (long)colors * bpc * columns > int.MaxValue / 2) return data;
+        var bpp = (colors * bpc + 7) / 8;
         var rowLen = (colors * bpc * columns + 7) / 8;
         if (rowLen < 1) return data;
 
@@ -138,6 +146,7 @@ internal static class Filters
 
         // PNG predictors: each row prefixed with a filter-type byte
         var nrows = data.Length / (rowLen + 1);
+        if (nrows == 0) return Array.Empty<byte>();
         var output = new byte[nrows * rowLen];
         var prev = new byte[rowLen];
         for (var r = 0; r < nrows; r++)
@@ -177,7 +186,7 @@ internal static class Filters
 
     // ------------------------------------------------------------------ LZW
 
-    private static byte[] LzwDecode(byte[] data, PdfDictionary? parms)
+    private static byte[] LzwDecode(byte[] data, PdfDictionary? parms, long limit)
     {
         var early = (parms?.Int("/EarlyChange") ?? 1) != 0 ? 1 : 0;
         var output = new MemoryStream();
@@ -206,15 +215,15 @@ internal static class Filters
             else if (prev is not null) { entry = new byte[prev.Length + 1]; prev.CopyTo(entry, 0); entry[^1] = prev[0]; }
             else break;
             output.Write(entry, 0, entry.Length);
-            Guard(output.Length);
-            if (prev is not null)
+            Guard(output.Length, limit);
+            if (prev is not null && table.Count < 4096)
             {
                 var ne = new byte[prev.Length + 1];
                 prev.CopyTo(ne, 0); ne[^1] = entry[0];
                 table.Add(ne);
             }
             prev = entry;
-            if (table.Count + early - 1 >= (1 << codeLen) && codeLen < 12) codeLen++;
+            if (table.Count + early >= (1 << codeLen) && codeLen < 12) codeLen++;
         }
         return output.ToArray();
     }
@@ -236,7 +245,7 @@ internal static class Filters
         return ms.ToArray();
     }
 
-    private static byte[] Ascii85Decode(byte[] data)
+    private static byte[] Ascii85Decode(byte[] data, long limit)
     {
         var ms = new MemoryStream();
         var tuple = new uint[5];
@@ -248,7 +257,7 @@ internal static class Filters
             var c = data[i];
             if (Lexer.IsWhitespace(c)) continue;
             if (c == (byte)'~') break;
-            if (c == (byte)'z' && n == 0) { ms.Write(new byte[4], 0, 4); Guard(ms.Length); continue; }
+            if (c == (byte)'z' && n == 0) { ms.Write(new byte[4], 0, 4); Guard(ms.Length, limit); continue; }
             if (c < (byte)'!' || c > (byte)'u') continue;
             tuple[n++] = (uint)(c - '!');
             if (n == 5)
@@ -270,7 +279,7 @@ internal static class Filters
         return ms.ToArray();
     }
 
-    private static byte[] RunLengthDecode(byte[] data)
+    private static byte[] RunLengthDecode(byte[] data, long limit)
     {
         var ms = new MemoryStream();
         var i = 0;
@@ -288,7 +297,7 @@ internal static class Filters
                 if (i >= data.Length) break;
                 var b = data[i++];
                 for (var k = 0; k < 257 - len; k++) ms.WriteByte(b);
-                Guard(ms.Length);
+                Guard(ms.Length, limit);
             }
         }
         return ms.ToArray();

@@ -16,6 +16,7 @@ public sealed class PdfFormDocument : IDisposable
     private AppearanceBuilder? _appearances;
     private readonly HashSet<string> _flattenOnly = new();
     private bool _rebuildAllAppearances;
+    private bool _formChanged;
     private bool _throwOnUnsupported;
     private bool _disposed;
 
@@ -50,15 +51,13 @@ public sealed class PdfFormDocument : IDisposable
     public static PdfFormDocument Load(byte[] pdf)
     {
         ArgumentNullException.ThrowIfNull(pdf);
-        return new PdfFormDocument(Open(pdf));
+        return new PdfFormDocument(Open(pdf, null));
     }
 
     public static PdfFormDocument Load(Stream pdf)
     {
         ArgumentNullException.ThrowIfNull(pdf);
-        using var ms = new MemoryStream();
-        pdf.CopyTo(ms);
-        return Load(ms.ToArray());
+        return Load(ReadAll(pdf), (string?)null);
     }
 
     public static PdfFormDocument Load(string path)
@@ -67,12 +66,50 @@ public sealed class PdfFormDocument : IDisposable
         return Load(File.ReadAllBytes(path));
     }
 
+    /// <summary>Opens a password-protected PDF from memory.</summary>
+    /// <param name="pdf">The PDF file.</param>
+    /// <param name="password">
+    /// The user password or the owner password; either opens the file. A file that opens without a password ignores it, and
+    /// <c>null</c> behaves like <see cref="Load(byte[])"/>. The password is used only while opening and is not kept.
+    /// </param>
+    /// <exception cref="PdfFormException">The file needs a password and none was given, or the password is wrong.</exception>
+    /// <remarks>
+    /// <see cref="Save(OutputMode)"/> always writes an <b>unencrypted</b> PDF, so the protection (user password, owner
+    /// password and permission restrictions) is not carried over to the output.
+    /// </remarks>
+    public static PdfFormDocument Load(byte[] pdf, string? password)
+    {
+        ArgumentNullException.ThrowIfNull(pdf);
+        return new PdfFormDocument(Open(pdf, password));
+    }
+
+    /// <summary>Opens a password-protected PDF from a stream. See <see cref="Load(byte[], string)"/>: user or owner password, ignored by files without one, and <see cref="Save(OutputMode)"/> always writes unencrypted output.</summary>
+    public static PdfFormDocument Load(Stream pdf, string? password)
+    {
+        ArgumentNullException.ThrowIfNull(pdf);
+        return Load(ReadAll(pdf), password);
+    }
+
+    /// <summary>Opens a password-protected PDF from a file. See <see cref="Load(byte[], string)"/>: user or owner password, ignored by files without one, and <see cref="Save(OutputMode)"/> always writes unencrypted output.</summary>
+    public static PdfFormDocument Load(string path, string? password)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        return Load(File.ReadAllBytes(path), password);
+    }
+
+    private static byte[] ReadAll(Stream pdf)
+    {
+        using var ms = new MemoryStream();
+        pdf.CopyTo(ms);
+        return ms.ToArray();
+    }
+
     /// <summary>Opens a PDF and guarantees that every failure surfaces as <see cref="PdfFormException"/>.</summary>
-    private static PdfDocument Open(byte[] pdf)
+    private static PdfDocument Open(byte[] pdf, string? password)
     {
         try
         {
-            var doc = PdfDocument.Load(pdf);
+            var doc = PdfDocument.Load(pdf, password);
             _ = doc.Pages.Count; // walk the page tree now so structural damage is reported at load time
             return doc;
         }
@@ -94,17 +131,22 @@ public sealed class PdfFormDocument : IDisposable
     {
         ThrowIfDisposed();
         var pages = FieldTree.AnnotationPages(_doc);
-        return Fields.Select(f => new FormFieldInfo(
-            f.FullName,
-            f.Type,
-            f.ValueString(),
-            f.Type is FieldType.CheckBox or FieldType.RadioButton
-                ? f.Widgets.Select(f.ExportValue).Distinct().ToList()
-                : f.Options().Select(o => o.Export).ToList(),
-            f.Widgets.Select(w => pages.TryGetValue(w, out var p) ? p : -1).Where(p => p >= 0).Distinct().OrderBy(p => p).ToList(),
-            f.Has(FieldFlag.ReadOnly),
-            f.Has(FieldFlag.Required),
-            f.Has(FieldFlag.Multiline))).ToList();
+        return Fields.Select(f =>
+        {
+            var options = f.Type is FieldType.CheckBox or FieldType.RadioButton ? f.ButtonOptions() : f.Options();
+            return new FormFieldInfo(
+                f.FullName,
+                f.Type,
+                f.ValueString(),
+                options.Select(o => o.Export).ToList(),
+                f.Widgets.Select(w => pages.TryGetValue(w, out var p) ? p : -1).Where(p => p >= 0).Distinct().OrderBy(p => p).ToList(),
+                f.Has(FieldFlag.ReadOnly),
+                f.Has(FieldFlag.Required),
+                f.Has(FieldFlag.Multiline))
+            {
+                OptionTexts = options.Select(o => o.Display).ToList(),
+            };
+        }).ToList();
     }
 
     public string? GetValue(string fieldName) => Find(fieldName).ValueString();
@@ -148,18 +190,13 @@ public sealed class PdfFormDocument : IDisposable
     public PdfFormDocument SetText(string fieldName, string? value)
     {
         var f = Find(fieldName, FieldType.Text);
-        var previous = f.Dict["/V"];
-        if (string.IsNullOrEmpty(value)) f.Dict.Remove("/V");
-        else f.Dict["/V"] = PdfString.FromText(value);
-        try
+        Atomically(f, new[] { "/V" }, Array.Empty<string>(), () =>
         {
+            if (string.IsNullOrEmpty(value)) f.Dict.Remove("/V");
+            else f.Dict["/V"] = PdfString.FromText(value);
             Appearances.Rebuild(f);
-        }
-        catch (PdfFormException)
-        {
-            f.Dict["/V"] = previous; // strict character check failed: leave the field as it was
-            throw;
-        }
+        });
+        _formChanged = true;
         return this;
     }
 
@@ -190,9 +227,13 @@ public sealed class PdfFormDocument : IDisposable
 
     private void ApplyButtonState(FieldNode f, string? state)
     {
-        f.Dict["/V"] = new PdfName(state ?? "Off");
-        foreach (var w in f.Widgets) w["/AS"] = new PdfName(state is not null && f.StateName(w) == state ? state : "Off");
-        Appearances.Rebuild(f);
+        Atomically(f, new[] { "/V" }, new[] { "/AS" }, () =>
+        {
+            f.Dict["/V"] = new PdfName(state ?? "Off");
+            foreach (var w in f.Widgets) w["/AS"] = new PdfName(state is not null && f.StateName(w) == state ? state : "Off");
+            Appearances.Rebuild(f);
+        });
+        _formChanged = true;
     }
 
     /// <summary>Selects a radio option by export value, display text from /Opt, or 0-based option index. Null clears the selection.</summary>
@@ -222,25 +263,35 @@ public sealed class PdfFormDocument : IDisposable
         if (f.Type is not (FieldType.ComboBox or FieldType.ListBox))
             throw new PdfFormException($"Field '{fieldName}' is {f.Type}, not a choice field.");
         var opts = f.Options();
-        if (string.IsNullOrEmpty(value))
+        // resolve the option first so a rejected value changes nothing
+        var idx = -1;
+        string? export = null;
+        if (!string.IsNullOrEmpty(value))
         {
-            f.Dict.Remove("/V");
-            f.Dict.Remove("/I");
-        }
-        else
-        {
-            var idx = opts.FindIndex(o => o.Export == value);
+            idx = opts.FindIndex(o => o.Export == value);
             if (idx < 0) idx = opts.FindIndex(o => o.Display == value);
             if (idx < 0) idx = opts.FindIndex(o => string.Equals(o.Display, value, StringComparison.OrdinalIgnoreCase));
             if (idx < 0 && !f.Has(FieldFlag.Edit) && opts.Count > 0)
                 throw new PdfFormException(
                     $"Choice '{fieldName}' has no option '{value}'. Available: {string.Join(", ", opts.Select(o => o.Export))}.");
-            var export = idx >= 0 ? opts[idx].Export : value;
-            f.Dict["/V"] = PdfString.FromText(export);
-            if (idx >= 0) f.Dict["/I"] = new PdfArray(new PdfNumber(idx));
-            else f.Dict.Remove("/I");
+            export = idx >= 0 ? opts[idx].Export : value;
         }
-        Appearances.Rebuild(f);
+        Atomically(f, new[] { "/V", "/I" }, Array.Empty<string>(), () =>
+        {
+            if (export is null)
+            {
+                f.Dict.Remove("/V");
+                f.Dict.Remove("/I");
+            }
+            else
+            {
+                f.Dict["/V"] = PdfString.FromText(export);
+                if (idx >= 0) f.Dict["/I"] = new PdfArray(new PdfNumber(idx));
+                else f.Dict.Remove("/I");
+            }
+            Appearances.Rebuild(f);
+        });
+        _formChanged = true;
         return this;
     }
 
@@ -251,8 +302,12 @@ public sealed class PdfFormDocument : IDisposable
         var f = Find(fieldName);
         if (f.Type is not (FieldType.Text or FieldType.ComboBox or FieldType.ListBox))
             throw new PdfFormException($"Field '{fieldName}' is {f.Type}; alignment applies to text and choice fields.");
-        f.Dict["/Q"] = new PdfNumber((int)alignment);
-        Appearances.Rebuild(f);
+        Atomically(f, new[] { "/Q" }, Array.Empty<string>(), () =>
+        {
+            f.Dict["/Q"] = new PdfNumber((int)alignment);
+            Appearances.Rebuild(f);
+        });
+        _formChanged = true;
         return this;
     }
 
@@ -269,6 +324,7 @@ public sealed class PdfFormDocument : IDisposable
         var f = Find(fieldName);
         var flags = readOnly ? f.Flags | (int)FieldFlag.ReadOnly : f.Flags & ~(int)FieldFlag.ReadOnly;
         f.Dict["/Ff"] = new PdfNumber(flags);
+        _formChanged = true;
         Invalidate();
         return this;
     }
@@ -283,6 +339,7 @@ public sealed class PdfFormDocument : IDisposable
         ArgumentNullException.ThrowIfNull(fieldNames);
         foreach (var n in fieldNames) Find(n);           // validate all first so the call is all-or-nothing
         foreach (var n in fieldNames) _flattenOnly.Add(n);
+        if (fieldNames.Length > 0) _formChanged = true;
         return this;
     }
 
@@ -302,14 +359,22 @@ public sealed class PdfFormDocument : IDisposable
         if (string.IsNullOrWhiteSpace(newName) || newName.Contains('.'))
             throw new PdfFormException("New field name must be non-empty and must not contain '.'.");
         var f = Find(fieldName);
-        var carrier = f.Dict.ContainsKey("/T") ? f.Dict : f.Dict.Parent()
-                      ?? throw new PdfFormException($"Field '{fieldName}' has no name to change.");
-        var prefix = fieldName.Contains('.') ? fieldName[..fieldName.LastIndexOf('.')] + "." : string.Empty;
+        // the node that carries the name: the field itself, or the nearest named ancestor when the field has no /T
+        var carrier = f.Dict;
+        for (var guard = 0; !carrier.ContainsKey("/T") && guard < 64; guard++)
+            carrier = carrier.Parent() ?? carrier;
+        if (!carrier.ContainsKey("/T")) throw new PdfFormException($"Field '{fieldName}' has no name to change.");
+        // the partial name may itself contain dots, so strip it from the full name instead of looking for the last dot
+        var partial = carrier.Str("/T") ?? string.Empty;
+        var prefix = partial.Length > 0 && fieldName.EndsWith(partial, StringComparison.Ordinal)
+            ? fieldName[..^partial.Length]
+            : fieldName.Contains('.') ? fieldName[..fieldName.LastIndexOf('.')] + "." : string.Empty;
         var target = prefix + newName;
         if (Fields.Any(x => !ReferenceEquals(x.Dict, f.Dict) && (x.FullName == target || x.FullName.StartsWith(target + ".", StringComparison.Ordinal))))
             throw new PdfFormException($"A field named '{target}' already exists.");
         carrier["/T"] = PdfString.FromText(newName);
         if (_flattenOnly.Remove(fieldName)) _flattenOnly.Add(target);
+        _formChanged = true;
         Invalidate();
         return this;
     }
@@ -339,6 +404,7 @@ public sealed class PdfFormDocument : IDisposable
         var renamed = _flattenOnly.Select(n => prefix + "." + n).ToList();
         _flattenOnly.Clear();
         foreach (var n in renamed) _flattenOnly.Add(n);
+        _formChanged = true;
         Invalidate();
         return this;
     }
@@ -361,6 +427,7 @@ public sealed class PdfFormDocument : IDisposable
         if (distinct.Count >= PageCount) throw new PdfFormException("Cannot remove every page of a document.");
         foreach (var i in distinct) _doc.RemovePage(i);
         FieldTree.PruneOrphans(_doc);
+        _formChanged = true;
         Invalidate();
         return this;
     }
@@ -390,7 +457,7 @@ public sealed class PdfFormDocument : IDisposable
         var existingNames = Fields.Select(f => f.FullName).ToHashSet();
         if (fieldPrefix is not null) ValidatePrefix(fieldPrefix, existingNames);
 
-        var other = Open(otherPdf);
+        var other = Open(otherPdf, null);
         var indices = pageIndices ?? Enumerable.Range(0, other.Pages.Count).ToArray();
         foreach (var i in indices)
             if (i < 0 || i >= other.Pages.Count)
@@ -403,6 +470,7 @@ public sealed class PdfFormDocument : IDisposable
         MergeDefaultResources(other, importer);
         RebuildFieldsArray(before, fieldPrefix, existingNames);
         FieldTree.PruneOrphans(_doc);
+        _formChanged = true;
         Invalidate();
         return this;
     }
@@ -429,6 +497,7 @@ public sealed class PdfFormDocument : IDisposable
         var added = pages.Skip(before).ToList();
         var order = pages.Take(atPageIndex).Concat(added).Concat(pages.Skip(atPageIndex).Take(before - atPageIndex)).ToList();
         _doc.SetPageOrder(order);
+        _formChanged = true;
         Invalidate();
         return this;
     }
@@ -446,6 +515,7 @@ public sealed class PdfFormDocument : IDisposable
         pages.RemoveAt(fromIndex);
         pages.Insert(toIndex, page);
         _doc.SetPageOrder(pages);
+        _formChanged = true;
         Invalidate();
         return this;
     }
@@ -466,7 +536,19 @@ public sealed class PdfFormDocument : IDisposable
 
     // ------------------------------------------------------------------ output
 
-    /// <summary>Produces the finished PDF. The document instance can still be used afterwards.</summary>
+    /// <summary>
+    /// Produces the finished PDF. The document instance can still be used afterwards.
+    /// </summary>
+    /// <remarks>
+    /// <b>XFA.</b> A template that also carries an XFA description (<c>/AcroForm /XFA</c>) would make Adobe Reader show the
+    /// XFA data, with the template's old values, instead of the AcroForm fields filled in here. The entry (and the catalog's
+    /// <c>/NeedsRendering</c>) is therefore removed from the output when <see cref="OutputMode.ReadOnly"/> is used, when any
+    /// setter, <see cref="RenameField"/>, <see cref="PrefixFields"/>, <see cref="FlattenFields"/> or page/merge operation has
+    /// changed the document since it was loaded, or when appearance streams had to be written. A file that was not changed
+    /// and needed no generated appearances keeps its XFA. A purely dynamic XFA form, one without real AcroForm fields, is
+    /// never touched in <see cref="OutputMode.Editable"/> or <see cref="OutputMode.ReadOnly"/> because there is nothing
+    /// else to show; with <see cref="OutputMode.Flattened"/> the whole AcroForm, XFA included, is removed as before.
+    /// </remarks>
     public byte[] Save(OutputMode mode = OutputMode.Flattened)
     {
         ThrowIfDisposed();
@@ -475,7 +557,7 @@ public sealed class PdfFormDocument : IDisposable
         {
             return SaveCore(mode);
         }
-        catch (Exception ex) when (ex is not PdfFormException and not OutOfMemoryException and not ArgumentException)
+        catch (Exception ex) when (ex is not PdfFormException and not OutOfMemoryException)
         {
             // the file is parsed lazily, so damage deep inside it can surface here rather than in Load
             throw new PdfFormException("Could not write PDF: " + ex.Message, ex);
@@ -506,11 +588,13 @@ public sealed class PdfFormDocument : IDisposable
             }
             acro["/NeedAppearances"] = PdfBool.False;
             _rebuildAllAppearances = false;
+            if (_formChanged || Appearances.Wrote) DropXfa(_doc);
         }
 
         var bytes = _doc.Save();
         // Reload so later edits start from a clean, compact object graph.
         _doc = PdfDocument.Load(bytes);
+        _formChanged = false;
         Invalidate();
 
         switch (mode)
@@ -520,14 +604,17 @@ public sealed class PdfFormDocument : IDisposable
                 if (_flattenOnly.Count == 0) return bytes;
                 var copy = PdfDocument.Load(bytes);
                 FlattenSelected(copy);
+                DropXfa(copy); // fields were removed from the AcroForm; XFA would still show them
                 return copy.Save();
             }
             case OutputMode.ReadOnly:
             {
                 var copy = PdfDocument.Load(bytes);
                 FlattenSelected(copy);
-                foreach (var f in FieldTree.Build(copy))
+                var locked = FieldTree.Build(copy);
+                foreach (var f in locked)
                     f.Dict["/Ff"] = new PdfNumber(f.Flags | (int)FieldFlag.ReadOnly);
+                if (locked.Count > 0) DropXfa(copy); // the XFA data would still describe editable fields
                 return copy.Save();
             }
             default:
@@ -537,6 +624,20 @@ public sealed class PdfFormDocument : IDisposable
                 return copy.Save();
             }
         }
+    }
+
+    /// <summary>
+    /// Removes the XFA description (/AcroForm /XFA and the catalog's /NeedsRendering) so viewers show the AcroForm
+    /// fields, whose values this library maintains, instead of the stale XFA data. Does nothing for a document without
+    /// real AcroForm fields (a purely dynamic XFA form), because dropping the XFA there would leave nothing to show.
+    /// </summary>
+    private static void DropXfa(PdfDocument doc)
+    {
+        var acro = FieldTree.AcroForm(doc);
+        if (acro is null || !acro.ContainsKey("/XFA")) return;
+        if (FieldTree.Build(doc).Count == 0) return;
+        acro.Remove("/XFA");
+        doc.Catalog.Remove("/NeedsRendering");
     }
 
     public void Save(string path, OutputMode mode = OutputMode.Flattened)
@@ -573,6 +674,26 @@ public sealed class PdfFormDocument : IDisposable
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+
+    /// <summary>
+    /// Runs <paramref name="change"/> and, when it throws, puts the listed keys of the field dictionary and of each of its
+    /// widgets back exactly as they were (absent stays absent), so a failed setter leaves the field untouched.
+    /// </summary>
+    private static void Atomically(FieldNode f, string[] fieldKeys, string[] widgetKeys, Action change)
+    {
+        var saved = new List<(PdfDictionary Dict, string Key, PdfObject? Value)>();
+        foreach (var k in fieldKeys) saved.Add((f.Dict, k, f.Dict[k]));
+        foreach (var w in f.Widgets) foreach (var k in widgetKeys) saved.Add((w, k, w[k]));
+        try
+        {
+            change();
+        }
+        catch
+        {
+            for (var i = saved.Count - 1; i >= 0; i--) saved[i].Dict[saved[i].Key] = saved[i].Value;
+            throw;
+        }
+    }
 
     private FieldNode Find(string name, FieldType? expected = null)
     {

@@ -8,21 +8,48 @@ namespace PdfFormFiller.Widgets;
 /// </summary>
 public abstract class PdfField
 {
-    internal readonly PdfFormDocument Doc;
+    internal readonly FormState State;
     internal readonly FieldType Kind;
+    private readonly int _generation;
     private string _fullName;
 
-    internal PdfField(PdfFormDocument doc, FormFieldInfo info)
+    internal PdfField(FormState state, FormFieldInfo info)
     {
-        Doc = doc;
+        State = state;
+        _generation = state.Generation;
         Kind = info.Type;
         _fullName = info.Name;
     }
 
-    /// <summary>Current description of the field, read from the document on every access.</summary>
+    /// <summary>The document, for reading. Throws when the document was closed or another one was loaded since this field was created.</summary>
+    internal PdfFormDocument Doc
+    {
+        get
+        {
+            if (State.Generation != _generation)
+                throw new InvalidOperationException($"The field '{_fullName}' belongs to a document that was closed or replaced by LoadFrom*.");
+            return State.Doc;
+        }
+    }
+
+    /// <summary>The document, for changing it. Drops the cached field descriptions so the next read sees the change.</summary>
+    internal PdfFormDocument Write()
+    {
+        var doc = Doc;
+        State.Invalidate();
+        return doc;
+    }
+
+    /// <summary>Current description of the field. Descriptions are cached until the next change made through this API, so reads stay live without rebuilding every field on every property access.</summary>
     internal FormFieldInfo Info
-        => Doc.GetFields().FirstOrDefault(f => f.Name == _fullName)
-           ?? throw new InvalidOperationException($"The field '{_fullName}' no longer exists in the document (its page was removed or it was flattened).");
+    {
+        get
+        {
+            _ = Doc; // generation check
+            return State.Find(_fullName)
+                   ?? throw new InvalidOperationException($"The field '{_fullName}' no longer exists in the document (its page was removed or it was flattened).");
+        }
+    }
 
     /// <summary>Short name (last dotted component). Setting it renames the field in the document.</summary>
     public string Name
@@ -30,7 +57,7 @@ public abstract class PdfField
         get => _fullName.Contains('.') ? _fullName[(_fullName.LastIndexOf('.') + 1)..] : _fullName;
         set
         {
-            Doc.RenameField(_fullName, value);
+            Write().RenameField(_fullName, value);
             _fullName = _fullName.Contains('.') ? _fullName[..(_fullName.LastIndexOf('.') + 1)] + value : value;
         }
     }
@@ -41,7 +68,7 @@ public abstract class PdfField
     public bool ReadOnly
     {
         get => Info.ReadOnly;
-        set => Doc.SetReadOnly(_fullName, value);
+        set => Write().SetReadOnly(_fullName, value);
     }
 
     /// <summary>Flatten just this field when the document is saved.</summary>

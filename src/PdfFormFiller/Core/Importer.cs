@@ -69,7 +69,7 @@ internal sealed class Importer
     {
         if (o is PdfReference r)
         {
-            var target = r.Target;
+            var target = PdfExtCore.Resolve(r) ?? PdfNull.Instance;
             if (target is PdfNull) return PdfNull.Instance;
             if (_memo.TryGetValue(target, out var done)) return _dest.RefFor(done);
             if (target is PdfDictionary td)

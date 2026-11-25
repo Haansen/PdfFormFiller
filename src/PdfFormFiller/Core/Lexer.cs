@@ -106,7 +106,7 @@ internal sealed class Lexer
 
     public static double ParseNumber(string text)
     {
-        if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return v;
+        if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return double.IsFinite(v) ? v : 0;
         // tolerate junk like "--5", "3.4.5", "5-"
         var sb = new StringBuilder();
         var seenDot = false; var seenDigit = false;
@@ -117,7 +117,7 @@ internal sealed class Lexer
             else if (c == '-' && sb.Length == 0) sb.Append(c);
             else if (seenDigit) break;
         }
-        return double.TryParse(sb.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v) ? v : 0;
+        return double.TryParse(sb.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v) && double.IsFinite(v) ? v : 0;
     }
 
     private Token ReadName()
