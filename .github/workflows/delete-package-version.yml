@@ -8,24 +8,38 @@ on:
         description: "Version to delete, for example 0.6.0"
         required: true
 
-permissions:
-  packages: write
+# No repository access is needed; only the packages API is called.
+permissions: {}
 
 jobs:
   delete:
     runs-on: ubuntu-latest
+    permissions:
+      packages: write
     strategy:
       matrix:
         package: [PdfFormFiller, PdfFormFiller.Widgets]
+    env:
+      OWNER: ${{ github.repository_owner }}
+      VERSION: ${{ inputs.version }}
+      PACKAGE: ${{ matrix.package }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Delete ${{ matrix.package }} ${{ inputs.version }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PACKAGE: ${{ matrix.package }}
-          VERSION: ${{ inputs.version }}
+      - name: Check version format
         run: |
-          id=$(gh api "users/${{ github.repository_owner }}/packages/nuget/$PACKAGE/versions" --jq ".[] | select(.name == \"$VERSION\") | .id")
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::'$VERSION' is not a version like 0.6.0"
+            exit 1
+          fi
+
+      - name: Delete $PACKAGE version
+        run: |
+          base="users/$OWNER/packages/nuget/$PACKAGE/versions"
+          # Capture the API output first so a failed API call stops the job instead of looking like "not found".
+          json=$(gh api --paginate "$base")
+          id=$(jq -r --arg v "$VERSION" '.[] | select(.name == $v) | .id' <<< "$json")
           if [ -z "$id" ]; then echo "$PACKAGE $VERSION not found"; exit 0; fi
-          gh api -X DELETE "users/${{ github.repository_owner }}/packages/nuget/$PACKAGE/versions/$id"
+          gh api -X DELETE "$base/$id"
           echo "deleted $PACKAGE $VERSION"
-          echo "remaining:"; gh api "users/${{ github.repository_owner }}/packages/nuget/$PACKAGE/versions" --jq '.[].name'
+          echo "remaining:"
+          gh api --paginate "$base" --jq '.[].name'

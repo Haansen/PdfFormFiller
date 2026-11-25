@@ -20,4 +20,9 @@
     <EmbeddedResource Include="Fonts\LiberationSans-Regular.ttf" LogicalName="PdfFormFiller.Fonts.LiberationSans-Regular.ttf" />
   </ItemGroup>
 
+  <!-- The font is embedded in the assembly, so its SIL OFL license text must ship with the package -->
+  <ItemGroup>
+    <None Include="Fonts\LICENSE-LiberationSans.txt" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
 </Project>

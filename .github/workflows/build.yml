@@ -13,7 +13,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-      - run: dotnet build PdfFormFiller.sln -c Release
+      - name: Build
+        run: dotnet build PdfFormFiller.sln -c Release
+
+      # Packing here catches packaging errors (metadata, missing files, dependency versions) on every PR.
+      # The output goes to a temp folder and is discarded.
+      - name: Pack
+        env:
+          OUT: ${{ runner.temp }}/nupkg
+        run: |
+          dotnet pack src/PdfFormFiller/PdfFormFiller.csproj -c Release --no-build -o "$OUT"
+          dotnet pack src/PdfFormFiller.Widgets/PdfFormFiller.Widgets.csproj -c Release --no-build -o "$OUT"
+          ls -l "$OUT"
